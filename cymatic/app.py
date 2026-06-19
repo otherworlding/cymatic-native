@@ -10,6 +10,9 @@ import moderngl
 from .config import MODES, CHAKRAS, PALETTES, PALETTE_NAMES, FFT_SIZE, SAMPLE_RATE
 from .audio import AudioEngine, AUDIO_OK
 from .renderer import Renderer
+from .system_audio import SystemAudioCapture, is_available as sc_available
+
+SC_AVAILABLE = sc_available()
 
 
 def _lerp(a, b, t):
@@ -52,10 +55,12 @@ class App:
         self.rdr = Renderer(self.ctx)
         self.rdr.resize(self.WIN_W, self.WIN_H)
 
-        # Audio
-        self.audio  = AudioEngine()
-        self.fft    = np.zeros(FFT_SIZE // 2 + 1)
-        self.devices = AudioEngine.list_devices()
+        # Audio — mic/file via sounddevice, system audio via ScreenCaptureKit
+        self.audio    = AudioEngine()
+        self.sc_cap   = None          # SystemAudioCapture instance when active
+        self.sc_fft   = np.zeros(FFT_SIZE // 2 + 1)   # filled by SCKit callback
+        self.fft      = np.zeros(FFT_SIZE // 2 + 1)
+        self.devices  = AudioEngine.list_devices()
 
         # Beat state
         self.beat_flash = 0.0
@@ -279,16 +284,15 @@ class App:
 
         # ── helper closures ────────────────────────────────────────────────
 
-        def btn(label, active, bx, by, bw=90, bh=22):
+        def btn(label, active, bx, by, bw=90, bh=22, dim=False):
             fc = (38, 22, 210) if active else (14, 14, 28)
             bc = (80, 60, 255) if active else (34, 34, 54)
+            tc = (255, 255, 255) if active else (65, 65, 80) if dim else (110, 110, 135)
             pygame.draw.rect(panel, fc, (bx, by, bw, bh), border_radius=4)
             pygame.draw.rect(panel, bc, (bx, by, bw, bh), 1, border_radius=4)
-            lbl = self.font_sm.render(label, True,
-                                      (255, 255, 255) if active else (110, 110, 135))
+            lbl = self.font_sm.render(label, True, tc)
             panel.blit(lbl, (bx + bw // 2 - lbl.get_width() // 2,
                               by + bh // 2 - lbl.get_height() // 2))
-            # Return screen-space rect
             return pygame.Rect(bx, h - PH + by, bw, bh)
 
         def sldr(label, key, val, lo, hi, sx, sy, sw=125):
@@ -310,8 +314,10 @@ class App:
         # ── Row 1 : Audio source ───────────────────────────────────────────
         x, y = 10, 10
         row_lbl("SOURCE", x, y)
-        self.btns['mic']    = btn("MIC / LINE IN", self.S['src'] == 'mic',  x + 65,  y, 108)
-        self.btns['file']   = btn("OPEN FILE",     self.S['src'] == 'file', x + 178, y, 85)
+        self.btns['mic']    = btn("MIC / LINE IN",  self.S['src'] == 'mic',    x + 65,  y, 108)
+        self.btns['system'] = btn("SYSTEM AUDIO",   self.S['src'] == 'system', x + 178, y, 105,
+                                   bh=22, dim=not SC_AVAILABLE)
+        self.btns['file']   = btn("OPEN FILE",      self.S['src'] == 'file',   x + 288, y, 85)
 
         st = self.font_sm.render(self.status_msg, True, (55, 55, 78))
         panel.blit(st, (w - st.get_width() - 10, y + 5))
@@ -460,8 +466,9 @@ class App:
         B = self.btns
         def hit(k): return k in B and B[k].collidepoint(mx, my)
 
-        if hit('mic'):     self._start_mic()
-        elif hit('file'):  self._open_file()
+        if hit('mic'):        self._start_mic()
+        elif hit('system'):   self._start_system()
+        elif hit('file'):     self._open_file()
         elif hit('chladni'):  self.S['pattern'] = 'chladni'
         elif hit('rings'):    self.S['pattern'] = 'rings'
         elif hit('liss'):
@@ -491,11 +498,46 @@ class App:
     # Audio control
     # ══════════════════════════════════════════════════════════════════════════
 
+    def _stop_system(self):
+        if self.sc_cap:
+            self.sc_cap.stop()
+            self.sc_cap = None
+
     def _start_mic(self, device=None):
+        self._stop_system()
         ok   = self.audio.start_mic(device)
         name = dict(self.devices).get(device, 'default') if device is not None else 'default'
         self.status_msg = f"Listening: {name}" if ok else "Mic error — check permissions"
         self.S['src'] = 'mic'
+
+    def _start_system(self):
+        if not SC_AVAILABLE:
+            self.status_msg = "Needs macOS 12.3+ and Screen Recording permission"
+            return
+        self._stop_system()
+        self.audio.stop()
+        self.status_msg = "Starting system audio…"
+        self.S['src'] = 'system'
+
+        def on_fft(fft):
+            self.sc_fft = fft
+
+        self.sc_cap = SystemAudioCapture(on_fft)
+
+        import threading
+        def attempt():
+            ok = self.sc_cap.start()
+            if ok:
+                self.status_msg = "System audio — all apps"
+            else:
+                self.status_msg = (
+                    "Permission denied — go to System Settings → "
+                    "Privacy & Security → Screen Recording → enable Terminal"
+                )
+                self.sc_cap = None
+                self.S['src'] = None
+
+        threading.Thread(target=attempt, daemon=True).start()
 
     def _open_file(self):
         # Use osascript (AppleScript) — tkinter crashes inside a pygame/SDL window on macOS
@@ -532,7 +574,10 @@ class App:
         while self.running:
             w, h = pygame.display.get_surface().get_size()
 
-            self.fft = self.audio.get_fft()
+            if self.sc_cap is not None:
+                self.fft = self.sc_fft
+            else:
+                self.fft = self.audio.get_fft()
             self._beat()
             energies = self._energies()
             self.S['t'] += 1.0
@@ -576,6 +621,7 @@ class App:
             self.clock.tick(60)
 
         self.audio.stop()
+        self._stop_system()
         if self.liss_tex:
             self.liss_tex.release()
         pygame.quit()
