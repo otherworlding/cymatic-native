@@ -685,26 +685,34 @@ class App:
                 self.S['rot'] += self.S['spin_speed']
 
             # ── Render pattern → FBO ──────────────────────────────────────
-            self.rdr.fbo.use()
-            self.ctx.viewport = (0, 0, w, h)
-            self.ctx.clear(0.0, 0.0, 0.0)
+            try:
+                self.rdr.fbo.use()
+                self.ctx.viewport = (0, 0, w, h)
+                self.ctx.clear(0.0, 0.0, 0.0)
 
-            pat = self.S['pattern']
-            if   pat == 'chladni':   self._draw_chladni(w, h, energies)
-            elif pat == 'rings':     self._draw_rings(w, h, energies)
-            elif pat == 'lissajous': self._draw_lissajous(w, h, energies)
+                pat = self.S['pattern']
+                if   pat == 'chladni':   self._draw_chladni(w, h, energies)
+                elif pat == 'rings':     self._draw_rings(w, h, energies)
+                elif pat == 'lissajous': self._draw_lissajous(w, h, energies)
 
-            # ── Composite → screen ────────────────────────────────────────
-            self.ctx.screen.use()
-            self.ctx.viewport = (0, 0, w, h)
-            self.ctx.clear(0.0, 0.0, 0.0)
+                # ── Composite → screen ────────────────────────────────────
+                self.ctx.screen.use()
+                self.ctx.viewport = (0, 0, w, h)
+                self.ctx.clear(0.0, 0.0, 0.0)
 
-            if self.S['kaleidoscope']:
-                self.rdr.kaleidoscope(w, h,
-                    self.S['segments'], self.S['rot'],
-                    self.S['zoom'], self.S['mirror'])
-            else:
-                self.rdr.blit(self.rdr.fbo_tex, w, h)
+                if self.S['kaleidoscope']:
+                    self.rdr.kaleidoscope(w, h,
+                        self.S['segments'], self.S['rot'],
+                        self.S['zoom'], self.S['mirror'])
+                else:
+                    self.rdr.blit(self.rdr.fbo_tex, w, h)
+            except Exception as e:
+                import traceback, sys
+                traceback.print_exc(file=sys.stderr)
+                # Recover: fall through to UI so the app stays open
+                self.ctx.screen.use()
+                self.ctx.viewport = (0, 0, w, h)
+                self.ctx.clear(0.02, 0.0, 0.05)
 
             # ── UI overlay ────────────────────────────────────────────────
             self._draw_ui(w, h)

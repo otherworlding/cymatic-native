@@ -12,9 +12,9 @@ void main() { gl_Position = vec4(in_vert, 0.0, 1.0); }
 CHLADNI = """
 #version 330
 uniform vec2  u_res;
-uniform float u_m,  u_n;    // source mode
-uniform float u_m2, u_n2;   // destination mode
-uniform float u_blend;       // 0 = pure source, 1 = pure destination
+uniform float u_m,  u_n;
+uniform float u_m2, u_n2;
+uniform float u_blend;
 uniform float u_thresh;
 uniform float u_bright;
 uniform float u_phase;
@@ -23,26 +23,30 @@ out vec4 f;
 const float PI = 3.14159265358979323846;
 void main() {
     vec2 uv = gl_FragCoord.xy / u_res * 2.0 - 1.0;
+    float px = uv.x + sin(u_phase * 0.31) * 0.018;
+    float py = uv.y + cos(u_phase * 0.23) * 0.018;
 
-    // Gentle breathing — shifts nodal lines slowly so pattern feels alive
-    float px = uv.x + sin(u_phase * 0.7) * 0.03;
-    float py = uv.y + cos(u_phase * 0.5) * 0.03;
+    // Interpolate mode numbers, not field values.
+    // This is equivalent to sweeping the plate's driving frequency between two
+    // resonances: the nodal lines deform continuously in place, just as sand
+    // physically migrates to new rest positions during a frequency sweep.
+    float mi = mix(u_m, u_m2, u_blend);
+    float ni = mix(u_n, u_n2, u_blend);
 
-    // Source and destination Chladni figures
-    float v1 = cos(u_m  * PI * px) * cos(u_n  * PI * py)
-             - cos(u_n  * PI * px) * cos(u_m  * PI * py);
-    float v2 = cos(u_m2 * PI * px) * cos(u_n2 * PI * py)
-             - cos(u_n2 * PI * px) * cos(u_m2 * PI * py);
+    float v = cos(mi * PI * px) * cos(ni * PI * py)
+            - cos(ni * PI * px) * cos(mi * PI * py);
 
-    // Smooth morph — intermediate values move nodal lines across the surface
-    // exactly like sand migrating to new resonance positions
-    float v = mix(v1, v2, u_blend);
+    // Second harmonic ghost peaks mid-transition, adding extra structure
+    // while the primary mode is in flux — collapses cleanly at blend=0 or 1
+    float ghost = sin(u_blend * PI) * 0.25;
+    float v2 = cos((mi + 1.0) * PI * px) * cos((ni + 1.0) * PI * py)
+             - cos((ni + 1.0) * PI * px) * cos((mi + 1.0) * PI * py);
+    v += ghost * v2;
+
     float d = abs(v);
-
-    float line    = 1.0 - smoothstep(0.0,           u_thresh,        d);
-    float glow    = 0.5 * (1.0 - smoothstep(0.0,    u_thresh * 5.0,  d));
-    float ambient = 0.07 * (1.0 - smoothstep(0.0,   u_thresh * 16.0, d));
-
+    float line    = 1.0 - smoothstep(0.0,          u_thresh,        d);
+    float glow    = 0.45 * (1.0 - smoothstep(0.0,  u_thresh * 4.5,  d));
+    float ambient = 0.06 * (1.0 - smoothstep(0.0,  u_thresh * 18.0, d));
     float intensity = clamp(line + glow + ambient, 0.0, 1.0);
     f = vec4(u_col * intensity * u_bright, 1.0);
 }
