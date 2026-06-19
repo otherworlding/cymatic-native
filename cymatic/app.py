@@ -99,6 +99,10 @@ class App:
         )
         self.random_pal = _rand_pal()
 
+        # Fullscreen state — windowed size is remembered so we can restore it
+        self.fullscreen    = False
+        self.windowed_size = (self.WIN_W, self.WIN_H)
+
         # UI
         self.show_panel  = True
         self.show_picker = True
@@ -106,6 +110,7 @@ class App:
         self.font        = pygame.font.SysFont('helvetica', 13)
         self.font_sm     = pygame.font.SysFont('helvetica', 11)
         self.ui_surf     = None
+        self.ui_tex      = None   # persistent GPU texture for the UI overlay
 
         # UI interaction maps (populated by _draw_panel)
         self.btns      = {}   # name → screen Rect
@@ -540,6 +545,8 @@ class App:
                 self.running = False
 
             elif ev.type == pygame.VIDEORESIZE:
+                if not self.fullscreen:
+                    self.windowed_size = ev.size
                 self.win = pygame.display.set_mode(
                     ev.size, pygame.OPENGL | pygame.DOUBLEBUF | pygame.RESIZABLE)
                 self.rdr.resize(*ev.size)
@@ -566,12 +573,40 @@ class App:
             elif ev.type == pygame.DROPFILE:
                 self._play_file(ev.file)
 
+    def _toggle_fullscreen(self):
+        """Switch between windowed and true fullscreen at the monitor's native
+        resolution.  pygame's toggle_fullscreen() is unreliable with OpenGL on
+        macOS (it keeps the old buffer size centred on the screen), so we set a
+        fresh display mode and resize the GPU framebuffer to match — this fills
+        a 4K display at full resolution instead of a small centred image."""
+        self.fullscreen = not self.fullscreen
+        gl = pygame.OPENGL | pygame.DOUBLEBUF
+
+        if self.fullscreen:
+            self.windowed_size = pygame.display.get_surface().get_size()
+            try:
+                dw, dh = pygame.display.get_desktop_sizes()[0]
+            except Exception:
+                info = pygame.display.Info()
+                dw, dh = info.current_w, info.current_h
+            size = (dw, dh)
+            self.win = pygame.display.set_mode(size, gl | pygame.FULLSCREEN)
+        else:
+            size = self.windowed_size
+            self.win = pygame.display.set_mode(size, gl | pygame.RESIZABLE)
+
+        self.rdr.resize(*size)        # resize the GPU render target to match
+        self.liss_surf = None         # force UI / lissajous surfaces to rebuild
+        self.ui_surf   = None
+
     def _key(self, key):
         if key == pygame.K_ESCAPE:
             if self.show_setup_guide:
                 self.show_setup_guide = False
             elif self.show_picker:
                 self.show_picker = False
+            elif self.fullscreen:
+                self._toggle_fullscreen()
             else:
                 self.running = False
         elif key == pygame.K_RETURN and self.show_picker:
@@ -579,7 +614,7 @@ class App:
         elif key == pygame.K_h:
             self.show_panel = not self.show_panel
         elif key == pygame.K_f:
-            pygame.display.toggle_fullscreen()
+            self._toggle_fullscreen()
         elif key == pygame.K_k:
             self.S['kaleidoscope'] = not self.S['kaleidoscope']
         elif key == pygame.K_r:
@@ -756,14 +791,21 @@ class App:
                 self.ctx.clear(0.02, 0.0, 0.05)
 
             # ── UI overlay ────────────────────────────────────────────────
+            # Reuse one persistent texture (write into it) instead of allocating
+            # and freeing a full-screen texture every frame — at 4K that churn
+            # is ~33 MB/frame and would stall the GPU.
             self._draw_ui(w, h)
             raw = pygame.image.tostring(self.ui_surf, 'RGBA', True)
-            ui_tex = self.ctx.texture((w, h), 4, raw)
-            ui_tex.filter = moderngl.LINEAR, moderngl.LINEAR
+            if self.ui_tex is None or self.ui_tex.size != (w, h):
+                if self.ui_tex:
+                    self.ui_tex.release()
+                self.ui_tex = self.ctx.texture((w, h), 4, raw)
+                self.ui_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+            else:
+                self.ui_tex.write(raw)
             self.ctx.enable(moderngl.BLEND)
             self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
-            self.rdr.blit(ui_tex, w, h)
-            ui_tex.release()
+            self.rdr.blit(self.ui_tex, w, h)
 
             self._events(w, h)
             pygame.display.flip()
@@ -772,4 +814,6 @@ class App:
         self.audio.stop()
         if self.liss_tex:
             self.liss_tex.release()
+        if self.ui_tex:
+            self.ui_tex.release()
         pygame.quit()
