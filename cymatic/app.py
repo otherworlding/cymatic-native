@@ -10,9 +10,7 @@ import moderngl
 from .config import MODES, CHAKRAS, PALETTES, PALETTE_NAMES, FFT_SIZE, SAMPLE_RATE
 from .audio import AudioEngine, AUDIO_OK
 from .renderer import Renderer
-from .system_audio import SystemAudioCapture, is_available as sc_available
-
-SC_AVAILABLE = sc_available()
+from .system_audio import find_blackhole, open_download_page, open_audio_midi_setup
 
 
 def _lerp(a, b, t):
@@ -55,12 +53,13 @@ class App:
         self.rdr = Renderer(self.ctx)
         self.rdr.resize(self.WIN_W, self.WIN_H)
 
-        # Audio — mic/file via sounddevice, system audio via ScreenCaptureKit
+        # Audio
         self.audio    = AudioEngine()
-        self.sc_cap   = None          # SystemAudioCapture instance when active
-        self.sc_fft   = np.zeros(FFT_SIZE // 2 + 1)   # filled by SCKit callback
         self.fft      = np.zeros(FFT_SIZE // 2 + 1)
         self.devices  = AudioEngine.list_devices()
+
+        # Setup guide overlay (shown when SYSTEM AUDIO clicked and BlackHole not installed)
+        self.show_setup_guide = False
 
         # Beat state
         self.beat_flash = 0.0
@@ -268,6 +267,10 @@ class App:
             self._draw_picker(w, h)
             return
 
+        if self.show_setup_guide:
+            self._draw_setup_guide(w, h)
+            return
+
         if not self.show_panel:
             hint = self.font_sm.render(
                 "H = controls   F = fullscreen   K = kaleidoscope",
@@ -315,8 +318,8 @@ class App:
         x, y = 10, 10
         row_lbl("SOURCE", x, y)
         self.btns['mic']    = btn("MIC / LINE IN",  self.S['src'] == 'mic',    x + 65,  y, 108)
-        self.btns['system'] = btn("SYSTEM AUDIO",   self.S['src'] == 'system', x + 178, y, 105,
-                                   bh=22, dim=not SC_AVAILABLE)
+        bh_found = find_blackhole() is not None
+        self.btns['system'] = btn("SYSTEM AUDIO", self.S['src'] == 'system', x + 178, y, 105)
         self.btns['file']   = btn("OPEN FILE",      self.S['src'] == 'file',   x + 288, y, 85)
 
         st = self.font_sm.render(self.status_msg, True, (55, 55, 78))
@@ -393,6 +396,48 @@ class App:
         skip = self.font_sm.render("ENTER or ESC — use default device", True, (50, 50, 72))
         self.ui_surf.blit(skip, (w // 2 - skip.get_width() // 2, h // 2 + 130))
 
+    def _draw_setup_guide(self, w, h):
+        ov = pygame.Surface((w, h), pygame.SRCALPHA)
+        ov.fill((0, 0, 10, 215))
+        self.ui_surf.blit(ov, (0, 0))
+
+        def txt(msg, y, color=(170, 170, 200), big=False):
+            f   = self.font if big else self.font_sm
+            lbl = f.render(msg, True, color)
+            self.ui_surf.blit(lbl, (w // 2 - lbl.get_width() // 2, y))
+
+        def box_btn(label, bx, by, bw=220, bh=28):
+            r = pygame.Rect(bx, by, bw, bh)
+            pygame.draw.rect(self.ui_surf, (28, 22, 100), r, border_radius=5)
+            pygame.draw.rect(self.ui_surf, (80, 60, 255), r, 1, border_radius=5)
+            lbl = self.font_sm.render(label, True, (200, 190, 255))
+            self.ui_surf.blit(lbl, (bx + bw // 2 - lbl.get_width() // 2,
+                                    by + bh // 2 - lbl.get_height() // 2))
+            return r
+
+        y = h // 2 - 190
+        txt("System Audio Setup", y, (210, 200, 255), big=True); y += 30
+        txt("BlackHole routes your Mac's audio into the visualizer", y, (120, 120, 160)); y += 36
+
+        steps = [
+            "1.  Click below to download  BlackHole 2ch  (free, 30 seconds)",
+            "2.  Install it — just double-click the .pkg, no restart needed",
+            "3.  Click  Open Audio MIDI Setup  below",
+            "4.  Press  +  (bottom-left) → Create Multi-Output Device",
+            "5.  Tick both  BlackHole 2ch  AND  your speakers / headphones",
+            "6.  Right-click the new device → Use This Device For Sound Output",
+            "7.  Come back here and click  SYSTEM AUDIO  — done!",
+        ]
+        for step in steps:
+            txt(step, y, (145, 145, 175)); y += 22
+        y += 12
+
+        cx = w // 2
+        self.btns['bh_download'] = box_btn("⬇  Download BlackHole (free)", cx - 240, y)
+        self.btns['bh_midi']     = box_btn("Open Audio MIDI Setup",         cx + 20,  y)
+        y += 46
+        self.btns['bh_close']    = box_btn("Close  (ESC)",                  cx - 110, y, 220)
+
     # ══════════════════════════════════════════════════════════════════════════
     # Event handling
     # ══════════════════════════════════════════════════════════════════════════
@@ -431,7 +476,9 @@ class App:
 
     def _key(self, key):
         if key == pygame.K_ESCAPE:
-            if self.show_picker:
+            if self.show_setup_guide:
+                self.show_setup_guide = False
+            elif self.show_picker:
                 self.show_picker = False
             else:
                 self.running = False
@@ -453,6 +500,16 @@ class App:
                 if r.collidepoint(mx, my):
                     self.show_picker = False
                     self._start_mic(idx)
+            return
+
+        if self.show_setup_guide:
+            B = self.btns
+            if 'bh_download' in B and B['bh_download'].collidepoint(mx, my):
+                open_download_page()
+            elif 'bh_midi' in B and B['bh_midi'].collidepoint(mx, my):
+                open_audio_midi_setup()
+            elif 'bh_close' in B and B['bh_close'].collidepoint(mx, my):
+                self.show_setup_guide = False
             return
 
         # Slider drag start
@@ -498,46 +555,22 @@ class App:
     # Audio control
     # ══════════════════════════════════════════════════════════════════════════
 
-    def _stop_system(self):
-        if self.sc_cap:
-            self.sc_cap.stop()
-            self.sc_cap = None
-
     def _start_mic(self, device=None):
-        self._stop_system()
         ok   = self.audio.start_mic(device)
         name = dict(self.devices).get(device, 'default') if device is not None else 'default'
         self.status_msg = f"Listening: {name}" if ok else "Mic error — check permissions"
         self.S['src'] = 'mic'
 
     def _start_system(self):
-        if not SC_AVAILABLE:
-            self.status_msg = "Needs macOS 12.3+ and Screen Recording permission"
-            return
-        self._stop_system()
-        self.audio.stop()
-        self.status_msg = "Starting system audio…"
-        self.S['src'] = 'system'
-
-        def on_fft(fft):
-            self.sc_fft = fft
-
-        self.sc_cap = SystemAudioCapture(on_fft)
-
-        import threading
-        def attempt():
-            ok = self.sc_cap.start()
-            if ok:
-                self.status_msg = "System audio — all apps"
-            else:
-                self.status_msg = (
-                    "Permission denied — go to System Settings → "
-                    "Privacy & Security → Screen Recording → enable Terminal"
-                )
-                self.sc_cap = None
-                self.S['src'] = None
-
-        threading.Thread(target=attempt, daemon=True).start()
+        bh = find_blackhole()
+        if bh:
+            idx, name = bh
+            ok = self.audio.start_mic(idx)
+            self.status_msg = f"System audio via {name}" if ok else "BlackHole error"
+            self.S['src'] = 'system' if ok else None
+        else:
+            # BlackHole not installed — show the setup guide overlay
+            self.show_setup_guide = True
 
     def _open_file(self):
         # Use osascript (AppleScript) — tkinter crashes inside a pygame/SDL window on macOS
@@ -574,10 +607,7 @@ class App:
         while self.running:
             w, h = pygame.display.get_surface().get_size()
 
-            if self.sc_cap is not None:
-                self.fft = self.sc_fft
-            else:
-                self.fft = self.audio.get_fft()
+            self.fft = self.audio.get_fft()
             self._beat()
             energies = self._energies()
             self.S['t'] += 1.0
@@ -621,7 +651,6 @@ class App:
             self.clock.tick(60)
 
         self.audio.stop()
-        self._stop_system()
         if self.liss_tex:
             self.liss_tex.release()
         pygame.quit()
