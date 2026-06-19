@@ -15,6 +15,7 @@ from .audio import AudioEngine, AUDIO_OK
 from .renderer import Renderer
 from .system_audio import find_blackhole, open_download_page, open_audio_midi_setup
 from .now_playing import current_track
+from . import hidpi
 
 
 def _lerp(a, b, t):
@@ -111,6 +112,11 @@ class App:
         # Fullscreen state — windowed size is remembered so we can restore it
         self.fullscreen    = False
         self.windowed_size = (self.WIN_W, self.WIN_H)
+
+        # Hi-DPI: physical render size + logical→physical mouse scale
+        self._render_size = None
+        self.dpi_x = 1.0
+        self.dpi_y = 1.0
 
         # Auto-hide controls after a few idle seconds; reappear on mouse move
         self.last_activity   = pygame.time.get_ticks()
@@ -334,8 +340,9 @@ class App:
         # beat term — so the overall flow churns steadily without lurching.
         warp = 0.15 + min(bass * 0.7 + treble * 0.4, 1.5)
 
-        # Time accumulates (never jumps); flows faster when the music is loud
-        self.liquid_t += 0.022 + self.vol_peak * g * 0.02
+        # Time accumulates (never jumps); slow base so the oil churns thickly,
+        # a little faster when the music is loud.
+        self.liquid_t += 0.011 + self.vol_peak * g * 0.012
         t = self.liquid_t
 
         self.rdr.liquid(w, h, t, bass_blob, mid, treble, lvl, warp,
@@ -431,9 +438,13 @@ class App:
         s = self._ui_scale(h)
 
         # Now-playing track name (top centre) — shown even when controls hide
-        if self.show_now_playing and self.now_playing:
+        if self.show_now_playing:
+            if self.now_playing:
+                text, col_np = "♪  " + self.now_playing, (200, 200, 225)
+            else:
+                text, col_np = "♪  no track (Music / Spotify only)", (120, 120, 145)
             npf = self._ui_font(15 * s)
-            lbl = npf.render("♪  " + self.now_playing, True, (200, 200, 225))
+            lbl = npf.render(text, True, col_np)
             bw, bh = lbl.get_width() + int(28 * s), lbl.get_height() + int(12 * s)
             bg = pygame.Surface((bw, bh), pygame.SRCALPHA)
             bg.fill((5, 5, 14, 170))
@@ -654,7 +665,8 @@ class App:
                     self.windowed_size = ev.size
                 self.win = pygame.display.set_mode(
                     ev.size, pygame.OPENGL | pygame.DOUBLEBUF | pygame.RESIZABLE)
-                self.rdr.resize(*ev.size)
+                # Loop re-detects the drawable size and resizes the GPU target.
+                self._render_size = None
                 self.liss_surf = None
                 self.ui_surf   = None
 
@@ -664,8 +676,9 @@ class App:
 
             elif ev.type == pygame.MOUSEBUTTONDOWN:
                 self.last_activity = pygame.time.get_ticks()
+                mx, my = self._scale_mouse(ev.pos)
                 if ev.button == 1:
-                    self._click(*ev.pos, w, h)
+                    self._click(mx, my, w, h)
                 elif ev.button == 4:
                     self.S['sensitivity'] = min(20, self.S['sensitivity'] + 0.5)
                 elif ev.button == 5:
@@ -677,10 +690,14 @@ class App:
             elif ev.type == pygame.MOUSEMOTION:
                 self.last_activity = pygame.time.get_ticks()
                 if ev.buttons[0]:
-                    self._drag(*ev.pos)
+                    self._drag(*self._scale_mouse(ev.pos))
 
             elif ev.type == pygame.DROPFILE:
                 self._play_file(ev.file)
+
+    def _scale_mouse(self, pos):
+        """Convert a logical (point) mouse position to physical pixels."""
+        return (int(pos[0] * self.dpi_x), int(pos[1] * self.dpi_y))
 
     def _toggle_fullscreen(self):
         """Switch between windowed and fullscreen.
@@ -708,9 +725,11 @@ class App:
             size = self.windowed_size
             self.win = pygame.display.set_mode(size, gl | pygame.RESIZABLE)
 
-        self.rdr.resize(*size)        # resize the GPU render target to match
-        self.liss_surf = None         # force UI / lissajous surfaces to rebuild
-        self.ui_surf   = None
+        # The render loop detects the new drawable size and resizes the GPU
+        # target itself (handles Retina scaling); just invalidate cached state.
+        self._render_size = None
+        self.liss_surf    = None
+        self.ui_surf      = None
 
     def _key(self, key):
         if key == pygame.K_ESCAPE:
@@ -866,13 +885,30 @@ class App:
 
     def run(self):
         while self.running:
-            w, h = pygame.display.get_surface().get_size()
+            lw, lh = pygame.display.get_surface().get_size()   # logical (points)
 
             # Skip rendering while minimised / zero-sized (GL calls would fail)
-            if w < 2 or h < 2:
-                self._events(w, h)
+            if lw < 2 or lh < 2:
+                self._events(lw, lh)
                 self.clock.tick(30)
                 continue
+
+            # Real GL drawable size (physical pixels) — differs from logical on
+            # Retina/Hi-DPI.  We render and lay out the UI in physical pixels and
+            # scale mouse input by the ratio, so fullscreen fills the whole 4K
+            # screen instead of one quarter.
+            w, h = hidpi.drawable_size((lw, lh))
+            self.dpi_x = w / lw
+            self.dpi_y = h / lh
+            if (w, h) != self._render_size:
+                self.rdr.resize(w, h)
+                self._render_size = (w, h)
+                self.ui_surf   = None
+                self.liss_surf = None
+                import sys
+                print(f"[cymatic] logical={lw}x{lh} drawable={w}x{h} "
+                      f"dpi={self.dpi_x:.2f} fullscreen={self.fullscreen}",
+                      file=sys.stderr)
 
             self.fft = self.audio.get_fft()
             self._beat()

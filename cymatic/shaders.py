@@ -124,11 +124,13 @@ uniform float u_warp;     // turbulence amount
 uniform vec3  u_pal[5];   // colour palette stops
 out vec4 f;
 
-vec3 palette(float t) {
-    t = fract(t) * 5.0;            // cycle through the 5 stops
-    int i = int(floor(t));
-    float fr = t - float(i);
-    return mix(u_pal[i % 5], u_pal[(i + 1) % 5], fr);
+// Smooth NON-cyclic ramp across the 5 palette stops.  Cycling with fract()
+// produced rainbow banding (the "digital" look); a single ramp keeps colour in
+// large, calm regions that bleed into one another like real dye.
+vec3 ramp(float t) {
+    t = clamp(t, 0.0, 1.0) * 4.0;
+    int i = min(int(floor(t)), 3);
+    return mix(u_pal[i], u_pal[i + 1], t - float(i));
 }
 
 // value noise + fractal Brownian motion — the organic "liquid" texture
@@ -156,50 +158,47 @@ void main() {
     p.x    *= u_res.x / max(u_res.y, 1.0);   // aspect-correct
     float t = u_time;
 
-    // ── Iterated domain warp (IQ-style fbm-of-fbm): churning, marbled flow ──
-    // Each layer advects the next, so the dye folds into itself like real oil
-    // on water.  Global turbulence is smooth (continuous energy via u_warp);
-    // bass mostly swells the blobs (below) rather than lurching the whole field.
-    float turb = 0.9 + u_warp * 2.0 + u_bass * 0.5;
-    vec2 q = vec2(fbm(p + vec2(0.0, t * 0.25)),
-                  fbm(p + vec2(5.2, 1.3) - t * 0.21));
-    vec2 r = vec2(fbm(p + turb * q + vec2(1.7, 9.2) + t * 0.18),
-                  fbm(p + turb * q + vec2(8.3, 2.8) - t * 0.16));
-    vec2 flow = p + turb * 0.6 * r;          // advected coordinate
+    // ── Iterated domain warp (fbm-of-fbm) — slow, large-scale folding flow ──
+    // Lower spatial frequency (p * 0.8) and slow time make the motion churn
+    // like thick oil rather than buzzing digital noise.
+    float turb = 0.8 + u_warp * 1.3 + u_bass * 0.7;
+    vec2 q = vec2(fbm(p * 0.8 + vec2(0.0, t * 0.10)),
+                  fbm(p * 0.8 + vec2(3.7, 1.2) - t * 0.09));
+    vec2 r = vec2(fbm(p * 0.8 + turb * q + vec2(1.7, 9.2) + t * 0.07),
+                  fbm(p * 0.8 + turb * q + vec2(8.3, 2.8) - t * 0.06));
+    vec2 flow = p + turb * 0.7 * r;          // advected coordinate
 
-    // ── Metaball dye blobs — more of them, faster, erratic, bass-driven ────
+    // ── Dye blobs → DENSITY only (not colour) — bass swells them ──────────
     float field = 0.0;
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < 7; i++) {
         float fi = float(i);
-        // erratic paths: two incommensurate sinusoids per axis
-        vec2 c = vec2(sin(t * (0.33 + 0.07 * fi) + fi * 1.7) * 0.6
-                    + sin(t * (0.11 + 0.03 * fi) + fi) * 0.3,
-                      cos(t * (0.29 + 0.06 * fi) + fi * 2.3) * 0.6
-                    + cos(t * (0.13 + 0.04 * fi) + fi) * 0.3);
-        // blobs swell on bass and pulse individually
-        float r0 = 0.18 + 0.10 * sin(t * 0.7 + fi * 2.0) + u_bass * 0.55;
+        vec2 c = vec2(sin(t * (0.15 + 0.04 * fi) + fi * 1.7),
+                      cos(t * (0.13 + 0.03 * fi) + fi * 2.3)) * 0.72;
+        float r0 = 0.24 + 0.12 * sin(t * 0.35 + fi) + u_bass * 0.55;
         float d  = length(flow - c);
-        field += (r0 * r0) / (d * d + 0.02);
+        field += (r0 * r0) / (d * d + 0.04);
     }
+    float density = smoothstep(0.5, 2.4, field);   // soft thick-dye mask
 
-    // ── Colour: dye bands flow through the palette, marbled by the fbm ─────
-    float marble = fbm(flow * 1.5 + t * 0.1);
-    float v   = field * 0.10 + marble * 0.6 + t * 0.04 + u_mid * 0.6;
-    vec3  col = palette(v);
+    // ── Colour from a SMOOTH low-frequency field → big bleeding regions ────
+    float cf = fbm(flow * 0.7 + t * 0.03) * 1.15 + u_mid * 0.25;
+    vec3  col = ramp(cf);
+    // Organic two-tone bleed: shift to a neighbouring palette region at the
+    // marbled boundaries (both colours are pure ramp samples → never muddy).
+    float marble = fbm(flow * 1.3 - t * 0.05 + u_treble * 1.2);
+    col = mix(col, ramp(cf + 0.22), smoothstep(0.4, 0.75, marble) * 0.55);
 
-    // Bleed a second palette tap for richer oil-slick colour mixing
-    col = mix(col, palette(v + 0.35 + marble), 0.35);
+    // Push saturation so it reads as rich backlit dye, not grey wash
+    float L = dot(col, vec3(0.299, 0.587, 0.114));
+    col = clamp(mix(vec3(L), col, 1.4), 0.0, 1.0);
 
-    // Sharp marbled veins where dye fronts collide; treble crisps them
-    float veins = sin((field + marble * 4.0) * 3.0 + t + u_treble * 8.0);
-    col += 0.18 * veins * veins;
-
-    // Backlit translucency + sustained brightness.  No beat/warp term here so
-    // transients pulse the BLOBS (local) rather than flashing the whole frame.
-    col *= 0.42 + u_level * 1.5;
+    // Backlit projector look: near-black where thin, glowing where dye is thick
+    col *= 0.08 + 1.6 * density;
+    col += 0.05 * ramp(cf);                  // faint ambient wash, never pure black
+    col *= 0.55 + 0.8 * u_level;             // overall brightness tracks the music
 
     // Soft pool-of-light vignette
-    float vig = smoothstep(1.8, 0.15, length(p));
+    float vig = smoothstep(1.9, 0.2, length(p));
     col *= 0.55 + 0.45 * vig;
 
     f = vec4(col, 1.0);
