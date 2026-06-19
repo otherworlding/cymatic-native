@@ -12,15 +12,16 @@ void main() { gl_Position = vec4(in_vert, 0.0, 1.0); }
 CHLADNI = """
 #version 330
 uniform vec2  u_res;
-uniform float u_m[6];      // mode m numbers (one per frequency band)
-uniform float u_n[6];      // mode n numbers
-uniform float u_w[6];      // excitation weight per mode = live audio energy
-uniform float u_ca[6];     // cos(mix angle) — symmetric/antisymmetric blend
-uniform float u_sa[6];     // sin(mix angle)
+uniform float u_m[10];     // mode m numbers (one per frequency band)
+uniform float u_n[10];     // mode n numbers
+uniform float u_w[10];     // excitation weight per mode = live audio energy
+uniform float u_ca[10];    // cos(mix angle) — symmetric/antisymmetric blend
+uniform float u_sa[10];    // sin(mix angle)
 uniform float u_thresh;    // nodal line half-width (sand thickness)
 uniform float u_bright;
 uniform vec3  u_col;
 out vec4 f;
+const int   N  = 10;       // must match len(config.CHLADNI_BANDS)
 const float PI = 3.14159265358979323846;
 
 void main() {
@@ -37,7 +38,7 @@ void main() {
     // Letting each band's angle drift sweeps through the whole family of real
     // Chladni figures, so the diagonals are no longer permanently nodal.
     float W = 0.0;
-    for (int k = 0; k < 6; k++) {
+    for (int k = 0; k < N; k++) {
         float m = u_m[k];
         float n = u_n[k];
         float A = cos(m * PI * uv.x) * cos(n * PI * uv.y);
@@ -133,43 +134,73 @@ vec3 palette(float t) {
     return mix(u_pal[i % 5], u_pal[(i + 1) % 5], fr);
 }
 
+// value noise + fractal Brownian motion — the organic "liquid" texture
+float hash(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+float vnoise(vec2 p) {
+    vec2 i = floor(p), fp = fract(p);
+    vec2 u = fp * fp * (3.0 - 2.0 * fp);
+    float a = hash(i),            b = hash(i + vec2(1, 0));
+    float c = hash(i + vec2(0,1)), d = hash(i + vec2(1, 1));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+float fbm(vec2 p) {
+    float s = 0.0, a = 0.5;
+    for (int i = 0; i < 5; i++) { s += a * vnoise(p); p = p * 2.02 + 7.1; a *= 0.5; }
+    return s;
+}
+
 void main() {
     vec2 uv = gl_FragCoord.xy / u_res;
     vec2 p  = uv * 2.0 - 1.0;
     p.x    *= u_res.x / max(u_res.y, 1.0);   // aspect-correct
     float t = u_time;
 
-    // ── Domain warp — three octaves of swirling flow (the "liquid") ──────
-    float warp = 0.35 + u_warp * 0.65;
-    vec2 q = p;
-    q += warp        * vec2(sin(p.y * 2.5 + t * 0.60), cos(p.x * 2.5 - t * 0.50));
-    q += warp * 0.50 * vec2(sin(q.y * 5.0 - t * 0.80), cos(q.x * 5.0 + t * 0.70));
-    q += warp * 0.25 * vec2(sin(q.y * 9.0 + t * 1.10), cos(q.x * 9.0 - t * 0.90));
+    // ── Iterated domain warp (IQ-style fbm-of-fbm): churning, marbled flow ──
+    // Each layer advects the next, so the dye folds into itself like real oil
+    // on water.  Turbulence is driven hard by bass/beats via u_warp.
+    float turb = 0.9 + u_warp * 2.2 + u_bass * 1.3;
+    vec2 q = vec2(fbm(p + vec2(0.0, t * 0.25)),
+                  fbm(p + vec2(5.2, 1.3) - t * 0.21));
+    vec2 r = vec2(fbm(p + turb * q + vec2(1.7, 9.2) + t * 0.18),
+                  fbm(p + turb * q + vec2(8.3, 2.8) - t * 0.16));
+    vec2 flow = p + turb * 0.6 * r;          // advected coordinate
 
-    // ── Metaball dye blobs — drift on slow Lissajous paths, swell on bass ─
+    // ── Metaball dye blobs — more of them, faster, erratic, bass-driven ────
     float field = 0.0;
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 8; i++) {
         float fi = float(i);
-        vec2 c = 0.72 * vec2(sin(t * (0.18 + 0.05 * fi) + fi * 1.7),
-                             cos(t * (0.15 + 0.04 * fi) + fi * 2.3));
-        float r = 0.22 + 0.12 * sin(t * 0.4 + fi) + u_bass * 0.35;
-        float d = length(q - c);
-        field += (r * r) / (d * d + 0.03);
+        // erratic paths: two incommensurate sinusoids per axis
+        vec2 c = vec2(sin(t * (0.33 + 0.07 * fi) + fi * 1.7) * 0.6
+                    + sin(t * (0.11 + 0.03 * fi) + fi) * 0.3,
+                      cos(t * (0.29 + 0.06 * fi) + fi * 2.3) * 0.6
+                    + cos(t * (0.13 + 0.04 * fi) + fi) * 0.3);
+        // blobs swell on bass and pulse individually
+        float r0 = 0.18 + 0.10 * sin(t * 0.7 + fi * 2.0) + u_bass * 0.55;
+        float d  = length(flow - c);
+        field += (r0 * r0) / (d * d + 0.02);
     }
 
-    // ── Colour: flowing bands through the palette ────────────────────────
-    float v   = field * 0.12 + t * 0.03 + u_mid * 0.5;
+    // ── Colour: dye bands flow through the palette, marbled by the fbm ─────
+    float marble = fbm(flow * 1.5 + t * 0.1);
+    float v   = field * 0.10 + marble * 0.6 + t * 0.04 + u_mid * 0.6;
     vec3  col = palette(v);
 
-    // Marbled veins where dye boundaries crowd; treble sharpens them
-    float veins = sin(field * 3.0 + t + u_treble * 6.0);
-    col += 0.14 * veins * veins;
+    // Bleed a second palette tap for richer oil-slick colour mixing
+    col = mix(col, palette(v + 0.35 + marble), 0.35);
 
-    // Backlit translucency + sustained brightness
-    col *= 0.42 + u_level * 1.5;
+    // Sharp marbled veins where dye fronts collide; treble crisps them
+    float veins = sin((field + marble * 4.0) * 3.0 + t + u_treble * 8.0);
+    col += 0.18 * veins * veins;
+
+    // Backlit translucency + sustained brightness; beats flare it
+    col *= 0.40 + u_level * 1.7 + u_warp * 0.3;
 
     // Soft pool-of-light vignette
-    float vig = smoothstep(1.7, 0.2, length(p));
+    float vig = smoothstep(1.8, 0.15, length(p));
     col *= 0.55 + 0.45 * vig;
 
     f = vec4(col, 1.0);

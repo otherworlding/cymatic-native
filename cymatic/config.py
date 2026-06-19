@@ -21,18 +21,24 @@ MODES = sorted([
 # A real plate driven by a complex sound vibrates in EVERY resonant mode at
 # once, each excited in proportion to the sound energy near that mode's
 # resonant frequency.  The instantaneous surface is the weighted sum of those
-# mode shapes; sand collects where the sum crosses zero.  We model that with
-# six representative modes spanning simple→complex, mapped to six frequency
-# bands.  Low frequencies excite simple low-order figures; highs excite fine
-# high-order grids — exactly the physical ordering (f rises with m²+n²).
+# mode shapes; sand collects where the sum crosses zero.
+#
+# Ten log-spaced bands span sub-bass→air so every instrument lands in its own
+# mode: kick/bass in the simple low figures, vocals and leads in the mid
+# lattices, cymbals and air in the fine grids.  Modes rise in complexity with
+# frequency (f ∝ m²+n²), and all use m≠n so each is a distinct figure.
 #   (m, n, lo_hz, hi_hz)
 CHLADNI_BANDS = [
-    (1, 2,    40,   110),   # sub / bass      → simple bar
-    (2, 3,   110,   280),   # bass / low-mid  → 2x3 lattice
-    (3, 4,   280,   650),   # midrange        → diagonal weave
-    (4, 5,   650,  1500),   # upper-mid       → dense lattice
-    (5, 6,  1500,  4000),   # presence        → fine grid
-    (7, 8,  4000, 15000),   # air / cymbals   → very fine grid
+    (1, 2,    30,    70),   # sub-bass        → simple bar
+    (2, 3,    70,   130),   # bass            → 2x3 lattice
+    (3, 4,   130,   220),   # low-mid         → diagonal weave
+    (2, 5,   220,   350),   # low-mid / vox   → 2x5 ladder
+    (4, 5,   350,   550),   # midrange        → dense lattice
+    (3, 6,   550,   850),   # mid / leads     → 3x6 weave
+    (5, 6,   850,  1400),   # upper-mid       → fine lattice
+    (4, 7,  1400,  2400),   # presence        → complex weave
+    (6, 7,  2400,  4500),   # brilliance      → fine grid
+    (7, 8,  4500, 16000),   # air / cymbals   → very fine grid
 ]
 
 CHAKRAS = [

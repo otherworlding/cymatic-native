@@ -71,14 +71,15 @@ class App:
         # Chladni modal-superposition state.
         # One smoothed excitation weight per frequency band; the plate is the
         # weighted sum of all band modes (see _draw_chladni / config.CHLADNI_BANDS).
-        self.cn_w     = [0.0] * len(CHLADNI_BANDS)  # per-band envelope (attack/release)
-        self.cn_ravg  = 1e-4                        # long-run level, for adaptive floor
+        self.cn_w     = [0.0] * len(CHLADNI_BANDS)   # per-band envelope (attack/release)
+        self.cn_avg   = [1e-3] * len(CHLADNI_BANDS)  # per-band slow average (AGC baseline)
         # Per-band symmetric↔antisymmetric mixing angle — drifts so the diagonal
         # nodal lines aren't permanently present (no fixed "X").  Spread the
         # starting angles so the six modes don't share the same figure.
         self.cn_phase = [0.4 + i * 1.05 for i in range(len(CHLADNI_BANDS))]
         self.vol_peak = 0.0                         # peak-hold so brightness sustains
         self.centroid_smooth = 300.0
+        self.liquid_t = 0.0                         # liquid show clock (accumulates)
 
         # Lissajous state
         self.liss_a     = 3.0
@@ -175,35 +176,36 @@ class App:
     # ══════════════════════════════════════════════════════════════════════════
 
     def _draw_chladni(self, w, h, energies):
-        # ── 1. Measure how hard each band drives its plate mode ───────────────
-        # Raw band energy = how much the audio excites that resonance right now.
-        # Sensitivity-independent here so pattern shape doesn't depend on the
-        # brightness slider (sensitivity only scales brightness, step 4).
+        n_bands = len(CHLADNI_BANDS)
+
+        # ── 1. Raw energy per band ────────────────────────────────────────────
         raw = [self.audio.band(self.fft, lo, hi) for (_, _, lo, hi) in CHLADNI_BANDS]
 
-        # ── 2. Per-band envelope: fast attack, slow release ───────────────────
-        # Sand jumps to a new figure instantly when a frequency hits (attack),
-        # then lingers as the sound fades (release) — so the image sustains and
-        # shifts continuously instead of flickering off between transients.
-        for i, target in enumerate(raw):
-            cur = self.cn_w[i]
-            rate = 0.55 if target > cur else 0.05
+        # ── 2. Per-band AGC → relative excitation ─────────────────────────────
+        # Music is bass-heavy: kick/bass dwarf cymbals in absolute energy, so
+        # absolute weighting would always show only the low modes.  Instead
+        # normalise each band by its OWN slow average, so every instrument
+        # excites its mode in proportion to how active it is relative to itself.
+        # A quiet hi-hat now lights its grid as strongly as a loud kick lights
+        # its bar — the whole spectrum participates.
+        rel = []
+        for i, r in enumerate(raw):
+            self.cn_avg[i] += (r - self.cn_avg[i]) * 0.004     # ~seconds-slow baseline
+            rel.append(r / (self.cn_avg[i] + 1.5e-4))
+
+        # ── 3. Envelope: fast attack, slow release (sand jumps, then lingers) ─
+        for i, target in enumerate(rel):
+            cur  = self.cn_w[i]
+            rate = 0.50 if target > cur else 0.06
             self.cn_w[i] = cur + (target - cur) * rate
 
-        peak = max(self.cn_w)
-        self.cn_ravg += (peak - self.cn_ravg) * 0.01   # tracks the music's level
-
-        # ── 3. Build superposition weights ────────────────────────────────────
-        # Adaptive floor (scaled to the music's general level) biased toward the
-        # simple low-order modes, so during quiet passages a clean low figure
-        # remains rather than a busy blur.  Real audio overrides it when present.
-        floor = self.cn_ravg * 0.18
-        prior = (1.0, 0.6, 0.38, 0.24, 0.15, 0.09)
-        weights = [self.cn_w[i] + floor * prior[i] for i in range(len(CHLADNI_BANDS))]
-
-        # Sharpen so the loudest band's geometry leads while quieter bands add
-        # subtle interference texture; then normalise for a stable line width.
-        weights = [wv ** 1.5 for wv in weights]
+        # ── 4. Superposition weights ──────────────────────────────────────────
+        # Small low-mode floor so silence settles to a clean simple figure.
+        # Gentle sharpening keeps geometry readable without crushing the quiet
+        # bands, so several instruments stay visible at once.
+        prior = (1.00, 0.70, 0.50, 0.40, 0.30, 0.24, 0.18, 0.13, 0.09, 0.06)
+        weights = [self.cn_w[i] + 0.06 * prior[i] for i in range(n_bands)]
+        weights = [wv ** 1.25 for wv in weights]
         tot = sum(weights)
         if tot > 1e-9:
             weights = [wv / tot for wv in weights]
@@ -211,23 +213,24 @@ class App:
         ms = [b[0] for b in CHLADNI_BANDS]
         ns = [b[1] for b in CHLADNI_BANDS]
 
-        # ── 3b. Drift each mode's symmetric↔antisymmetric mixing angle ────────
-        # Slow base drift (incommensurate rates so they don't sync) plus a nudge
-        # from that band's own energy and from beats — active bands reshape their
-        # figure, so the pattern is never locked into a static diagonal cross.
-        drift = (0.0036, 0.0029, 0.0043, 0.0031, 0.0047, 0.0039)
+        # ── 4b. Drift each mode's symmetric↔antisymmetric mixing angle ────────
+        # Slow incommensurate base drift + a nudge from that band's activity and
+        # from beats, so active instruments visibly reshape their own figure and
+        # the diagonals are never permanently nodal.
+        drift = (0.0036, 0.0029, 0.0043, 0.0031, 0.0047,
+                 0.0039, 0.0026, 0.0051, 0.0034, 0.0045)
         cas, sas = [], []
-        for i in range(len(CHLADNI_BANDS)):
-            self.cn_phase[i] += drift[i] + min(self.cn_w[i] * 1.2, 0.04) \
+        for i in range(n_bands):
+            self.cn_phase[i] += drift[i] + min(self.cn_w[i] * 0.012, 0.05) \
                                          + self.beat_flash * 0.03
             cas.append(math.cos(self.cn_phase[i]))
             sas.append(math.sin(self.cn_phase[i]))
 
-        # ── 4. Brightness — overall level with peak-hold, plus beat punch ─────
+        # ── 5. Brightness — from ABSOLUTE level (so dynamics still read) ──────
         sens  = self.S['sensitivity'] / 8.0
-        level = sum(self.cn_w) * sens
+        level = sum(raw) * sens
         self.vol_peak = max(level, self.vol_peak * 0.96)
-        bright = 0.55 + min(self.vol_peak * 2.4, 2.2) + self.beat_flash * 0.8
+        bright = 0.55 + min(self.vol_peak * 9.0, 2.3) + self.beat_flash * 0.8
         bright = min(3.2, bright)
 
         # ── 5. Line width (sand thickness) from the LINE WIDTH slider ─────────
@@ -256,19 +259,23 @@ class App:
         return [(c[0] / 255, c[1] / 255, c[2] / 255) for c in stops]
 
     def _draw_liquid(self, w, h, energies):
-        # Map the spectrum to the liquid's drivers (normalised, clamped 0–~1.3)
-        g = self.S['sensitivity'] / 8.0 * 14.0
-        bass   = min(self._be(40, 180)    * g, 1.3)
-        mid    = min(self._be(180, 1800)  * g, 1.3)
-        treble = min(self._be(1800, 12000)* g, 1.3)
+        # Map the spectrum to the liquid's drivers (normalised, clamped)
+        g = self.S['sensitivity'] / 8.0 * 16.0
+        bass   = min(self._be(35, 180)     * g, 1.6)
+        mid    = min(self._be(180, 1800)   * g, 1.5)
+        treble = min(self._be(1800, 12000) * g, 1.5)
 
         level = self._be(20, 20000)
-        self.vol_peak = max(level, self.vol_peak * 0.95)   # peak-hold backlight
-        lvl  = min(self.vol_peak * g * 0.5, 1.4)
+        self.vol_peak = max(level, self.vol_peak * 0.94)   # peak-hold backlight
+        lvl  = min(self.vol_peak * g * 0.55, 1.5)
 
-        # Turbulence rises with treble and beats; time advances continuously
-        warp = min(treble * 0.8 + self.beat_flash * 0.6, 1.5)
-        t    = self.S['t'] * 0.016
+        # Turbulence churns with bass + beats (kick = visible lurch), with a
+        # small constant baseline so the oil is always slowly moving.
+        warp = 0.15 + min(bass * 0.9 + treble * 0.4 + self.beat_flash * 1.1, 1.8)
+
+        # Time accumulates (never jumps); flows faster when the music is loud
+        self.liquid_t += 0.022 + self.vol_peak * g * 0.02
+        t = self.liquid_t
 
         self.rdr.liquid(w, h, t, bass, mid, treble, lvl, warp, self._palette_stops())
 
