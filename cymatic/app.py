@@ -73,6 +73,10 @@ class App:
         # weighted sum of all band modes (see _draw_chladni / config.CHLADNI_BANDS).
         self.cn_w     = [0.0] * len(CHLADNI_BANDS)  # per-band envelope (attack/release)
         self.cn_ravg  = 1e-4                        # long-run level, for adaptive floor
+        # Per-band symmetric↔antisymmetric mixing angle — drifts so the diagonal
+        # nodal lines aren't permanently present (no fixed "X").  Spread the
+        # starting angles so the six modes don't share the same figure.
+        self.cn_phase = [0.4 + i * 1.05 for i in range(len(CHLADNI_BANDS))]
         self.vol_peak = 0.0                         # peak-hold so brightness sustains
         self.centroid_smooth = 300.0
 
@@ -207,6 +211,18 @@ class App:
         ms = [b[0] for b in CHLADNI_BANDS]
         ns = [b[1] for b in CHLADNI_BANDS]
 
+        # ── 3b. Drift each mode's symmetric↔antisymmetric mixing angle ────────
+        # Slow base drift (incommensurate rates so they don't sync) plus a nudge
+        # from that band's own energy and from beats — active bands reshape their
+        # figure, so the pattern is never locked into a static diagonal cross.
+        drift = (0.0036, 0.0029, 0.0043, 0.0031, 0.0047, 0.0039)
+        cas, sas = [], []
+        for i in range(len(CHLADNI_BANDS)):
+            self.cn_phase[i] += drift[i] + min(self.cn_w[i] * 1.2, 0.04) \
+                                         + self.beat_flash * 0.03
+            cas.append(math.cos(self.cn_phase[i]))
+            sas.append(math.sin(self.cn_phase[i]))
+
         # ── 4. Brightness — overall level with peak-hold, plus beat punch ─────
         sens  = self.S['sensitivity'] / 8.0
         level = sum(self.cn_w) * sens
@@ -225,7 +241,36 @@ class App:
         hue = max(0.0, min(1.0, hue)) + self.beat_flash * 0.25
         col = self._color(hue, self._dom_band(energies))
 
-        self.rdr.chladni(w, h, ms, ns, weights, thresh, bright, col)
+        self.rdr.chladni(w, h, ms, ns, weights, cas, sas, thresh, bright, col)
+
+    def _palette_stops(self):
+        """Current colour palette as five (r,g,b) tuples in 0–1, for the GPU."""
+        cm = self.S['color_mode']
+        if cm == 'random':
+            stops = self.random_pal
+        elif cm == 'chakra':
+            stops = [c[1] for c in CHAKRAS]
+        else:
+            stops = PALETTES[PALETTE_NAMES[self.S['palette_idx']]]
+        stops = (stops + stops)[:5]          # ensure at least five
+        return [(c[0] / 255, c[1] / 255, c[2] / 255) for c in stops]
+
+    def _draw_liquid(self, w, h, energies):
+        # Map the spectrum to the liquid's drivers (normalised, clamped 0–~1.3)
+        g = self.S['sensitivity'] / 8.0 * 14.0
+        bass   = min(self._be(40, 180)    * g, 1.3)
+        mid    = min(self._be(180, 1800)  * g, 1.3)
+        treble = min(self._be(1800, 12000)* g, 1.3)
+
+        level = self._be(20, 20000)
+        self.vol_peak = max(level, self.vol_peak * 0.95)   # peak-hold backlight
+        lvl  = min(self.vol_peak * g * 0.5, 1.4)
+
+        # Turbulence rises with treble and beats; time advances continuously
+        warp = min(treble * 0.8 + self.beat_flash * 0.6, 1.5)
+        t    = self.S['t'] * 0.016
+
+        self.rdr.liquid(w, h, t, bass, mid, treble, lvl, warp, self._palette_stops())
 
     def _draw_rings(self, w, h, energies):
         vol = self._be(20, 20000)
@@ -377,9 +422,10 @@ class App:
         # ── Row 2 : Pattern ────────────────────────────────────────────────
         y += 34
         row_lbl("PATTERN", x, y)
-        self.btns['chladni'] = btn("Chladni",   self.S['pattern'] == 'chladni',   x + 65,  y, 78)
-        self.btns['rings']   = btn("Rings",     self.S['pattern'] == 'rings',     x + 148, y, 62)
-        self.btns['liss']    = btn("Lissajous", self.S['pattern'] == 'lissajous', x + 215, y, 80)
+        self.btns['chladni'] = btn("Chladni",   self.S['pattern'] == 'chladni',   x + 62,  y, 62)
+        self.btns['rings']   = btn("Rings",     self.S['pattern'] == 'rings',     x + 128, y, 50)
+        self.btns['liquid']  = btn("Liquid",    self.S['pattern'] == 'liquid',    x + 182, y, 54)
+        self.btns['liss']    = btn("Lissajous", self.S['pattern'] == 'lissajous', x + 240, y, 74)
 
         # Mode indicator — show the leading (loudest) mode in the superposition
         if self.S['pattern'] == 'chladni':
@@ -387,7 +433,7 @@ class App:
             m, n = CHLADNI_BANDS[di][0], CHLADNI_BANDS[di][1]
             ml = self.font_sm.render(f"{len(CHLADNI_BANDS)} modes  lead ({m},{n})",
                                      True, (38, 38, 58))
-            panel.blit(ml, (x + 305, y + 5))
+            panel.blit(ml, (x + 320, y + 5))
 
         # ── Row 2b : Color ─────────────────────────────────────────────────
         cx2 = x + 430
@@ -609,6 +655,7 @@ class App:
         elif hit('midi'):     open_audio_midi_setup()
         elif hit('chladni'):  self.S['pattern'] = 'chladni'
         elif hit('rings'):    self.S['pattern'] = 'rings'
+        elif hit('liquid'):   self.S['pattern'] = 'liquid'
         elif hit('liss'):
             self.S['pattern'] = 'lissajous'
             self.liss_trail.clear()
@@ -710,6 +757,7 @@ class App:
                 pat = self.S['pattern']
                 if   pat == 'chladni':   self._draw_chladni(w, h, energies)
                 elif pat == 'rings':     self._draw_rings(w, h, energies)
+                elif pat == 'liquid':    self._draw_liquid(w, h, energies)
                 elif pat == 'lissajous': self._draw_lissajous(w, h, energies)
 
                 # ── Composite → screen ────────────────────────────────────
