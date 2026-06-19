@@ -12,32 +12,36 @@ void main() { gl_Position = vec4(in_vert, 0.0, 1.0); }
 CHLADNI = """
 #version 330
 uniform vec2  u_res;
-uniform float u_m, u_n;
-uniform float u_thresh;   // nodal line half-width
-uniform float u_bright;   // brightness multiplier
-uniform float u_phase;    // time-based animation offset
+uniform float u_m,  u_n;    // source mode
+uniform float u_m2, u_n2;   // destination mode
+uniform float u_blend;       // 0 = pure source, 1 = pure destination
+uniform float u_thresh;
+uniform float u_bright;
+uniform float u_phase;
 uniform vec3  u_col;
 out vec4 f;
 const float PI = 3.14159265358979323846;
 void main() {
     vec2 uv = gl_FragCoord.xy / u_res * 2.0 - 1.0;
 
-    // Animated Chladni — phase shifts the figure gently over time
-    // so the pattern feels alive even during sustained tones.
-    float px = uv.x + sin(u_phase * 0.7) * 0.04;
-    float py = uv.y + cos(u_phase * 0.5) * 0.04;
+    // Gentle breathing — shifts nodal lines slowly so pattern feels alive
+    float px = uv.x + sin(u_phase * 0.7) * 0.03;
+    float py = uv.y + cos(u_phase * 0.5) * 0.03;
 
-    float v = cos(u_m * PI * px) * cos(u_n * PI * py)
-            - cos(u_n * PI * px) * cos(u_m * PI * py);
+    // Source and destination Chladni figures
+    float v1 = cos(u_m  * PI * px) * cos(u_n  * PI * py)
+             - cos(u_n  * PI * px) * cos(u_m  * PI * py);
+    float v2 = cos(u_m2 * PI * px) * cos(u_n2 * PI * py)
+             - cos(u_n2 * PI * px) * cos(u_m2 * PI * py);
 
+    // Smooth morph — intermediate values move nodal lines across the surface
+    // exactly like sand migrating to new resonance positions
+    float v = mix(v1, v2, u_blend);
     float d = abs(v);
 
-    // Sharp nodal line
-    float line = 1.0 - smoothstep(0.0, u_thresh, d);
-    // Wide soft glow — always at least dimly visible
-    float glow = 0.5  * (1.0 - smoothstep(0.0, u_thresh * 5.0, d));
-    // Ambient fill so pattern never fully disappears
-    float ambient = 0.08 * (1.0 - smoothstep(0.0, u_thresh * 14.0, d));
+    float line    = 1.0 - smoothstep(0.0,           u_thresh,        d);
+    float glow    = 0.5 * (1.0 - smoothstep(0.0,    u_thresh * 5.0,  d));
+    float ambient = 0.07 * (1.0 - smoothstep(0.0,   u_thresh * 16.0, d));
 
     float intensity = clamp(line + glow + ambient, 0.0, 1.0);
     f = vec4(u_col * intensity * u_bright, 1.0);

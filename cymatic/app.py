@@ -67,13 +67,13 @@ class App:
         self.e_avg = self.k_avg = 0.0
         self.on_beat = False
 
-        # Chladni state
-        self.mode_idx      = 2
-        self.mode_hold     = 0
-        self.mode_target   = 2
-        self.mode_stable   = 0
-        self.vol_peak      = 0.0   # peak-hold volume — decays slowly so image sustains
-        self.centroid_smooth = 300.0  # smoothed spectral centroid
+        # Chladni morph state
+        self.mode_from     = 2     # index into MODES we are blending FROM
+        self.mode_to       = 5     # index into MODES we are blending TOWARD
+        self.blend_t       = 0.0   # morph progress: 0 = at mode_from, 1 = at mode_to
+        self.next_target   = 5     # centroid-derived target, queued for next morph
+        self.vol_peak      = 0.0   # peak-hold envelope so image sustains between sounds
+        self.centroid_smooth = 300.0
 
         # Lissajous state
         self.liss_a     = 3.0
@@ -172,57 +172,46 @@ class App:
     def _draw_chladni(self, w, h, energies):
         vol = self._be(20, 20000)
 
-        # ── Peak-hold envelope — sustains brightness between transients ───────
-        # Rise fast (track the sound), decay slowly (holds image during silence)
-        self.vol_peak = max(vol, self.vol_peak * 0.96)
-        # Smoothed centroid tracks spectral weight continuously
+        # ── Sustained envelope ────────────────────────────────────────────────
+        self.vol_peak = max(vol, self.vol_peak * 0.965)
+
+        # ── Spectral centroid → target mode ───────────────────────────────────
         centroid = self.audio.spectral_centroid(self.fft)
-        self.centroid_smooth += (centroid - self.centroid_smooth) * 0.08
+        self.centroid_smooth += (centroid - self.centroid_smooth) * 0.06
+        self.next_target = self._hz_to_mode(self.centroid_smooth)
 
-        # ── Mode selection ────────────────────────────────────────────────────
-        # Drive mode with centroid (changes with every note/chord shift) and
-        # boost variety: on beats also pick from secondary spectral peaks.
-        tgt = self._hz_to_mode(self.centroid_smooth)
+        # ── Continuous morph: blend_t advances every frame ───────────────────
+        # Speed: normally ~1 sec per full transition; beats rush it forward.
+        base_speed  = 0.008 + self.vol_peak * 0.006
+        beat_boost  = self.beat_flash * 0.045
+        self.blend_t += base_speed + beat_boost
+        self.blend_t  = min(1.0, self.blend_t)
 
-        if self.on_beat:
-            # On beats jump to centroid mode immediately, break out of holds
-            self.mode_idx    = tgt
-            self.mode_target = tgt
-            self.mode_stable = 0
-            self.mode_hold   = 2
-        else:
-            if self.mode_hold > 0:
-                self.mode_hold -= 1
+        # When morph completes, immediately queue the next transition
+        if self.blend_t >= 1.0:
+            self.mode_from = self.mode_to        # arrived — freeze here
+            self.mode_to   = self.next_target    # head toward new target
+            self.blend_t   = 0.0
 
-            if tgt == self.mode_target:
-                self.mode_stable = min(self.mode_stable + 1, 60)
-            else:
-                self.mode_target = tgt
-                self.mode_stable = 0
+            # If already at the target, pick a neighbour for visual movement
+            if self.mode_from == self.mode_to:
+                self.mode_to = (self.mode_to + 1) % len(MODES)
 
-            # Switch when target has been stable for 3+ frames and hold expired
-            if self.mode_hold == 0 and self.mode_stable >= 3:
-                self.mode_idx  = tgt
-                self.mode_hold = 3
+        mf, nf = MODES[self.mode_from]
+        mt, nt = MODES[self.mode_to]
 
-        m, n = MODES[self.mode_idx]
+        # ── Visuals ───────────────────────────────────────────────────────────
+        thresh = 0.022 + (self.S['thresh'] - 1) / 19 * 0.05
+        thresh += self.beat_flash * 0.016
 
-        # ── Visual parameters ─────────────────────────────────────────────────
-        # Line width: slider 1-20 maps 0.018 (sharp) to 0.065 (painterly)
-        thresh = 0.018 + (self.S['thresh'] - 1) / 19 * 0.047
-        thresh += self.beat_flash * 0.018   # lines flare on beats
-
-        # Brightness: always at least 0.55 so the pattern never vanishes
-        bright = 0.55 + self.vol_peak * 2.2 + self.beat_flash * 1.4
+        bright = 0.6 + self.vol_peak * 2.0 + self.beat_flash * 1.2
         bright = min(3.0, bright)
 
-        # Slowly advance phase so pattern animates even during sustained notes
-        phase = self.S['t'] * 0.012
+        phase = self.S['t'] * 0.011
 
-        # Color stays rich — use 0.65 as base position in palette, not vol-dependent
-        col = self._color(0.65 + self.beat_flash * 0.35, self._dom_band(energies))
+        col = self._color(0.6 + self.beat_flash * 0.4, self._dom_band(energies))
 
-        self.rdr.chladni(w, h, m, n, thresh, bright, phase, col)
+        self.rdr.chladni(w, h, mf, nf, mt, nt, self.blend_t, thresh, bright, phase, col)
 
     def _draw_rings(self, w, h, energies):
         vol = self._be(20, 20000)
