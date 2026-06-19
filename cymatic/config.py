@@ -1,44 +1,36 @@
 """Constants — modes, chakras, palettes."""
 
-# Chladni mode pairs (m, n) sorted by m²+n² — matches how a real square plate
-# resonates: lower frequencies excite simple low-order modes, higher frequencies
-# excite complex high-order modes.  Every pair here produces a visually distinct
-# figure; adjacent entries were chosen to maximise geometric contrast.
-MODES = sorted([
-    (1,2),(2,1),(1,3),(3,1),
-    (2,3),(3,2),(2,4),(4,2),(1,4),(4,1),
-    (3,4),(4,3),(2,5),(5,2),(1,5),(5,1),
-    (3,5),(5,3),(4,5),(5,4),(2,6),(6,2),
-    (1,6),(6,1),(3,6),(6,3),(4,6),(6,4),
-    (5,6),(6,5),(2,7),(7,2),(3,7),(7,3),
-    (4,7),(7,4),(5,7),(7,5),(1,7),(7,1),
-    (6,7),(7,6),(3,8),(8,3),(5,8),(8,5),
-    (4,8),(8,4),(6,8),(8,6),(7,8),(8,7),
-    (5,9),(9,5),(6,9),(9,6),(7,9),(9,7),(8,9),(9,8),
-], key=lambda mn: mn[0]**2 + mn[1]**2)
-
 # Chladni modal-superposition bands.
 # A real plate driven by a complex sound vibrates in EVERY resonant mode at
 # once, each excited in proportion to the sound energy near that mode's
 # resonant frequency.  The instantaneous surface is the weighted sum of those
 # mode shapes; sand collects where the sum crosses zero.
 #
-# Ten log-spaced bands span sub-bass→air so every instrument lands in its own
-# mode: kick/bass in the simple low figures, vocals and leads in the mid
-# lattices, cymbals and air in the fine grids.  Modes rise in complexity with
-# frequency (f ∝ m²+n²), and all use m≠n so each is a distinct figure.
+# Sixteen bands span sub-bass→air so every instrument lands in its own mode.
+# Spacing is mid-dense — the 165 Hz–2.2 kHz region where melody and harmony
+# live gets the most bands for the finest pitch discrimination, while sub-bass
+# and air are coarser.  Modes rise in complexity with frequency (f ∝ m²+n²),
+# all use m≠n so each is a distinct figure.  Sixteen is near the legibility
+# ceiling: more modes superpose into noise rather than geometry.
+# NOTE: len(CHLADNI_BANDS) MUST equal N in the CHLADNI shader (shaders.py).
 #   (m, n, lo_hz, hi_hz)
 CHLADNI_BANDS = [
-    (1, 2,    30,    70),   # sub-bass        → simple bar
-    (2, 3,    70,   130),   # bass            → 2x3 lattice
-    (3, 4,   130,   220),   # low-mid         → diagonal weave
-    (2, 5,   220,   350),   # low-mid / vox   → 2x5 ladder
-    (4, 5,   350,   550),   # midrange        → dense lattice
-    (3, 6,   550,   850),   # mid / leads     → 3x6 weave
-    (5, 6,   850,  1400),   # upper-mid       → fine lattice
-    (4, 7,  1400,  2400),   # presence        → complex weave
-    (6, 7,  2400,  4500),   # brilliance      → fine grid
-    (7, 8,  4500, 16000),   # air / cymbals   → very fine grid
+    (1, 2,    30,    55),   # sub-bass
+    (1, 3,    55,    85),   # bass
+    (2, 3,    85,   120),   # bass
+    (1, 4,   120,   165),   # low-mid
+    (3, 4,   165,   220),   # low-mid
+    (2, 5,   220,   290),   # low-mid / vox
+    (3, 5,   290,   380),   # mid
+    (4, 5,   380,   500),   # mid
+    (3, 6,   500,   660),   # mid / leads
+    (4, 6,   660,   870),   # mid
+    (5, 6,   870,  1150),   # upper-mid
+    (4, 7,  1150,  1550),   # upper-mid
+    (5, 7,  1550,  2200),   # presence
+    (6, 7,  2200,  3300),   # presence
+    (5, 8,  3300,  5500),   # brilliance
+    (7, 8,  5500, 16000),   # air / cymbals
 ]
 
 CHAKRAS = [

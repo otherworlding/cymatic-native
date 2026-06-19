@@ -1,8 +1,8 @@
-"""ModernGL GPU renderer — Chladni, Rings, Liquid, Kaleidoscope, passthrough."""
+"""ModernGL GPU renderer — Chladni, Liquid, Kaleidoscope, passthrough."""
 
 import moderngl
 import numpy as np
-from .shaders import VERT, CHLADNI, RINGS, LIQUID, KALEI, PASS
+from .shaders import VERT, CHLADNI, LIQUID, KALEI, PASS
 
 
 class Renderer:
@@ -13,14 +13,12 @@ class Renderer:
         vbo  = ctx.buffer(quad.tobytes())
 
         self.p_chladni = ctx.program(vertex_shader=VERT, fragment_shader=CHLADNI)
-        self.p_rings   = ctx.program(vertex_shader=VERT, fragment_shader=RINGS)
         self.p_liquid  = ctx.program(vertex_shader=VERT, fragment_shader=LIQUID)
         self.p_kalei   = ctx.program(vertex_shader=VERT, fragment_shader=KALEI)
         self.p_pass    = ctx.program(vertex_shader=VERT, fragment_shader=PASS)
 
         def vao(p): return ctx.vertex_array(p, [(vbo, '2f', 'in_vert')])
         self.vao_c = vao(self.p_chladni)
-        self.vao_r = vao(self.p_rings)
         self.vao_l = vao(self.p_liquid)
         self.vao_k = vao(self.p_kalei)
         self.vao_p = vao(self.p_pass)
@@ -85,17 +83,6 @@ class Renderer:
         else:
             for i, row in enumerate(rows):
                 prog[f'{name}[{i}]'].value = row
-
-    def rings(self, w, h, srcs, amps, wls, cols, t):
-        p = self.p_rings
-        p['u_res'].value  = (w, h)
-        p['u_time'].value = float(t)
-        for i in range(7):
-            p[f'u_src[{i}]'].value  = tuple(srcs[i])
-            p[f'u_amp[{i}]'].value  = float(amps[i])
-            p[f'u_wl[{i}]'].value   = float(wls[i])
-            p[f'u_scol[{i}]'].value = tuple(cols[i])
-        self.vao_r.render(moderngl.TRIANGLE_STRIP)
 
     def kaleidoscope(self, w, h, segs, rot, zoom, mirror):
         self.fbo_tex.use(0)

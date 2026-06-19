@@ -7,7 +7,7 @@ import numpy as np
 import pygame
 import moderngl
 
-from .config import (MODES, CHLADNI_BANDS, CHAKRAS, PALETTES, PALETTE_NAMES,
+from .config import (CHLADNI_BANDS, CHAKRAS, PALETTES, PALETTE_NAMES,
                      FFT_SIZE, SAMPLE_RATE)
 from .audio import AudioEngine, AUDIO_OK
 from .renderer import Renderer
@@ -158,19 +158,6 @@ class App:
             self.beat_flash = 1.0
         self.beat_flash *= 0.70
 
-    def _hz_to_mode(self, hz):
-        """Map a frequency to the mode index whose m²+n² best matches.
-        Real square plates resonate at f ∝ m²+n², so this is physically accurate."""
-        hz = max(50, min(10000, hz))
-        # Scale so that 50 Hz → complexity 2, 10 kHz → complexity ~200
-        target = 2.0 + (math.log2(hz / 50) / math.log2(200)) * (9**2 + 8**2 - 2)
-        best, best_d = 0, float('inf')
-        for i, (m, n) in enumerate(MODES):
-            d = abs(m*m + n*n - target)
-            if d < best_d:
-                best_d, best = d, i
-        return best
-
     # ══════════════════════════════════════════════════════════════════════════
     # Patterns
     # ══════════════════════════════════════════════════════════════════════════
@@ -200,12 +187,11 @@ class App:
             self.cn_w[i] = cur + (target - cur) * rate
 
         # ── 4. Superposition weights ──────────────────────────────────────────
-        # Small low-mode floor so silence settles to a clean simple figure.
-        # Gentle sharpening keeps geometry readable without crushing the quiet
-        # bands, so several instruments stay visible at once.
-        prior = (1.00, 0.70, 0.50, 0.40, 0.30, 0.24, 0.18, 0.13, 0.09, 0.06)
-        weights = [self.cn_w[i] + 0.06 * prior[i] for i in range(n_bands)]
-        weights = [wv ** 1.25 for wv in weights]
+        # Small low-mode floor (decays with band index) so silence settles to a
+        # clean simple figure.  Sharpening keeps geometry readable with many
+        # bands without crushing the quiet ones, so several instruments show.
+        weights = [self.cn_w[i] + 0.06 / (1.0 + 0.3 * i) for i in range(n_bands)]
+        weights = [wv ** 1.3 for wv in weights]
         tot = sum(weights)
         if tot > 1e-9:
             weights = [wv / tot for wv in weights]
@@ -214,15 +200,15 @@ class App:
         ns = [b[1] for b in CHLADNI_BANDS]
 
         # ── 4b. Drift each mode's symmetric↔antisymmetric mixing angle ────────
-        # Slow incommensurate base drift + a nudge from that band's activity and
-        # from beats, so active instruments visibly reshape their own figure and
-        # the diagonals are never permanently nodal.
-        drift = (0.0036, 0.0029, 0.0043, 0.0031, 0.0047,
-                 0.0039, 0.0026, 0.0051, 0.0034, 0.0045)
+        # Slow incommensurate base drift (golden-ratio spread so they never sync)
+        # + a nudge from that band's activity and from beats, so active
+        # instruments visibly reshape their figure and the diagonals are never
+        # permanently nodal.
         cas, sas = [], []
         for i in range(n_bands):
-            self.cn_phase[i] += drift[i] + min(self.cn_w[i] * 0.012, 0.05) \
-                                         + self.beat_flash * 0.03
+            base = 0.0026 + 0.0021 * ((i * 0.61803398) % 1.0)
+            self.cn_phase[i] += base + min(self.cn_w[i] * 0.012, 0.05) \
+                                     + self.beat_flash * 0.03
             cas.append(math.cos(self.cn_phase[i]))
             sas.append(math.sin(self.cn_phase[i]))
 
@@ -269,35 +255,21 @@ class App:
         self.vol_peak = max(level, self.vol_peak * 0.94)   # peak-hold backlight
         lvl  = min(self.vol_peak * g * 0.55, 1.5)
 
-        # Turbulence churns with bass + beats (kick = visible lurch), with a
-        # small constant baseline so the oil is always slowly moving.
-        warp = 0.15 + min(bass * 0.9 + treble * 0.4 + self.beat_flash * 1.1, 1.8)
+        # Beats pulse the BLOBS, not the whole frame: fold the beat flash into
+        # the bass channel (which swells individual blobs in the shader) so a
+        # kick squeezes the dye locally instead of flashing the entire image.
+        bass_blob = min(bass + self.beat_flash * 0.7, 1.9)
+
+        # Global turbulence is smooth — driven by continuous energy only, no
+        # beat term — so the overall flow churns steadily without lurching.
+        warp = 0.15 + min(bass * 0.7 + treble * 0.4, 1.5)
 
         # Time accumulates (never jumps); flows faster when the music is loud
         self.liquid_t += 0.022 + self.vol_peak * g * 0.02
         t = self.liquid_t
 
-        self.rdr.liquid(w, h, t, bass, mid, treble, lvl, warp, self._palette_stops())
-
-    def _draw_rings(self, w, h, energies):
-        vol = self._be(20, 20000)
-        bb  = 1 + self.beat_flash * 4
-        t   = self.S['t'] * (0.014 + vol * 0.05 + self.beat_flash * 0.08)
-
-        srcs, amps, wls, cols = [], [], [], []
-        for i, (_, color, lo, hi) in enumerate(CHAKRAS):
-            angle = (i / 7) * 2 * math.pi - math.pi / 2
-            srcs.append((0.5 + 0.22 * math.cos(angle),
-                         0.5 + 0.22 * math.sin(angle)))
-            a = self._be(lo, hi) * bb
-            amps.append(a)
-            wls.append(max(0.01, min(0.2, 60 / max(1, (lo + hi) / 2))))
-            if self.S['color_mode'] == 'chakra':
-                cols.append(tuple(c / 255 for c in color))
-            else:
-                cols.append(self._color(a, i))
-
-        self.rdr.rings(w, h, srcs, amps, wls, cols, t)
+        self.rdr.liquid(w, h, t, bass_blob, mid, treble, lvl, warp,
+                        self._palette_stops())
 
     def _draw_lissajous(self, w, h, energies):
         # Lazy-init surface
@@ -429,10 +401,9 @@ class App:
         # ── Row 2 : Pattern ────────────────────────────────────────────────
         y += 34
         row_lbl("PATTERN", x, y)
-        self.btns['chladni'] = btn("Chladni",   self.S['pattern'] == 'chladni',   x + 62,  y, 62)
-        self.btns['rings']   = btn("Rings",     self.S['pattern'] == 'rings',     x + 128, y, 50)
-        self.btns['liquid']  = btn("Liquid",    self.S['pattern'] == 'liquid',    x + 182, y, 54)
-        self.btns['liss']    = btn("Lissajous", self.S['pattern'] == 'lissajous', x + 240, y, 74)
+        self.btns['chladni'] = btn("Chladni",   self.S['pattern'] == 'chladni',   x + 65,  y, 72)
+        self.btns['liquid']  = btn("Liquid",    self.S['pattern'] == 'liquid',    x + 142, y, 64)
+        self.btns['liss']    = btn("Lissajous", self.S['pattern'] == 'lissajous', x + 211, y, 80)
 
         # Mode indicator — show the leading (loudest) mode in the superposition
         if self.S['pattern'] == 'chladni':
@@ -661,7 +632,6 @@ class App:
         elif hit('file'):     self._open_file()
         elif hit('midi'):     open_audio_midi_setup()
         elif hit('chladni'):  self.S['pattern'] = 'chladni'
-        elif hit('rings'):    self.S['pattern'] = 'rings'
         elif hit('liquid'):   self.S['pattern'] = 'liquid'
         elif hit('liss'):
             self.S['pattern'] = 'lissajous'
@@ -763,7 +733,6 @@ class App:
 
                 pat = self.S['pattern']
                 if   pat == 'chladni':   self._draw_chladni(w, h, energies)
-                elif pat == 'rings':     self._draw_rings(w, h, energies)
                 elif pat == 'liquid':    self._draw_liquid(w, h, energies)
                 elif pat == 'lissajous': self._draw_lissajous(w, h, energies)
 

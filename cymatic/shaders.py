@@ -12,16 +12,16 @@ void main() { gl_Position = vec4(in_vert, 0.0, 1.0); }
 CHLADNI = """
 #version 330
 uniform vec2  u_res;
-uniform float u_m[10];     // mode m numbers (one per frequency band)
-uniform float u_n[10];     // mode n numbers
-uniform float u_w[10];     // excitation weight per mode = live audio energy
-uniform float u_ca[10];    // cos(mix angle) — symmetric/antisymmetric blend
-uniform float u_sa[10];    // sin(mix angle)
+uniform float u_m[16];     // mode m numbers (one per frequency band)
+uniform float u_n[16];     // mode n numbers
+uniform float u_w[16];     // excitation weight per mode = live audio energy
+uniform float u_ca[16];    // cos(mix angle) — symmetric/antisymmetric blend
+uniform float u_sa[16];    // sin(mix angle)
 uniform float u_thresh;    // nodal line half-width (sand thickness)
 uniform float u_bright;
 uniform vec3  u_col;
 out vec4 f;
-const int   N  = 10;       // must match len(config.CHLADNI_BANDS)
+const int   N  = 16;       // must match len(config.CHLADNI_BANDS)
 const float PI = 3.14159265358979323846;
 
 void main() {
@@ -54,33 +54,6 @@ void main() {
     float intensity = clamp(line + halo, 0.0, 1.0);
 
     f = vec4(u_col * intensity * u_bright, 1.0);
-}
-"""
-
-# ── Wave rings ──────────────────────────────────────────────────────────────
-# 7 point sources (one per chakra band) emitting radial sine waves.
-RINGS = """
-#version 330
-uniform vec2  u_res;
-uniform vec2  u_src[7];
-uniform float u_amp[7], u_wl[7];
-uniform vec3  u_scol[7];
-uniform float u_time;
-out vec4 f;
-void main() {
-    vec2 uv = gl_FragCoord.xy / u_res;
-    float sum = 0.0, wt = 0.0;
-    vec3 col = vec3(0.0);
-    for (int i = 0; i < 7; i++) {
-        float d = length(uv - u_src[i]);
-        float w = sin(6.28318 * d / max(u_wl[i], 0.001) - u_time);
-        sum += u_amp[i] * w;
-        col += u_scol[i] * u_amp[i];
-        wt  += u_amp[i];
-    }
-    float norm = wt > 0.001 ? (sum / wt + 1.0) * 0.5 : 0.5;
-    if (wt > 0.001) col /= wt;
-    f = vec4(col * norm, 1.0);
 }
 """
 
@@ -161,8 +134,9 @@ void main() {
 
     // ── Iterated domain warp (IQ-style fbm-of-fbm): churning, marbled flow ──
     // Each layer advects the next, so the dye folds into itself like real oil
-    // on water.  Turbulence is driven hard by bass/beats via u_warp.
-    float turb = 0.9 + u_warp * 2.2 + u_bass * 1.3;
+    // on water.  Global turbulence is smooth (continuous energy via u_warp);
+    // bass mostly swells the blobs (below) rather than lurching the whole field.
+    float turb = 0.9 + u_warp * 2.0 + u_bass * 0.5;
     vec2 q = vec2(fbm(p + vec2(0.0, t * 0.25)),
                   fbm(p + vec2(5.2, 1.3) - t * 0.21));
     vec2 r = vec2(fbm(p + turb * q + vec2(1.7, 9.2) + t * 0.18),
@@ -196,8 +170,9 @@ void main() {
     float veins = sin((field + marble * 4.0) * 3.0 + t + u_treble * 8.0);
     col += 0.18 * veins * veins;
 
-    // Backlit translucency + sustained brightness; beats flare it
-    col *= 0.40 + u_level * 1.7 + u_warp * 0.3;
+    // Backlit translucency + sustained brightness.  No beat/warp term here so
+    // transients pulse the BLOBS (local) rather than flashing the whole frame.
+    col *= 0.42 + u_level * 1.5;
 
     // Soft pool-of-light vignette
     float vig = smoothstep(1.8, 0.15, length(p));
