@@ -60,6 +60,7 @@ class App:
 
         # Setup guide overlay (shown when SYSTEM AUDIO clicked and BlackHole not installed)
         self.show_setup_guide = False
+        self._guide_bh_found  = False
 
         # Beat state
         self.beat_flash = 0.0
@@ -405,38 +406,55 @@ class App:
             f   = self.font if big else self.font_sm
             lbl = f.render(msg, True, color)
             self.ui_surf.blit(lbl, (w // 2 - lbl.get_width() // 2, y))
+            return lbl.get_height()
 
-        def box_btn(label, bx, by, bw=220, bh=28):
-            r = pygame.Rect(bx, by, bw, bh)
-            pygame.draw.rect(self.ui_surf, (28, 22, 100), r, border_radius=5)
-            pygame.draw.rect(self.ui_surf, (80, 60, 255), r, 1, border_radius=5)
-            lbl = self.font_sm.render(label, True, (200, 190, 255))
+        def box_btn(label, bx, by, bw=220, bh=28, highlight=False):
+            fc = (38, 22, 210) if highlight else (28, 22, 100)
+            bc = (140, 120, 255) if highlight else (80, 60, 255)
+            r  = pygame.Rect(bx, by, bw, bh)
+            pygame.draw.rect(self.ui_surf, fc, r, border_radius=5)
+            pygame.draw.rect(self.ui_surf, bc, r, 1, border_radius=5)
+            lbl = self.font_sm.render(label, True, (220, 210, 255) if highlight else (200, 190, 255))
             self.ui_surf.blit(lbl, (bx + bw // 2 - lbl.get_width() // 2,
                                     by + bh // 2 - lbl.get_height() // 2))
             return r
 
-        y = h // 2 - 190
-        txt("System Audio Setup", y, (210, 200, 255), big=True); y += 30
-        txt("BlackHole routes your Mac's audio into the visualizer", y, (120, 120, 160)); y += 36
+        cx = w // 2
+        y  = h // 2 - 200
+
+        txt("System Audio Setup  —  one-time, 5 minutes", y, (210, 200, 255), big=True); y += 34
+
+        bh_installed = getattr(self, '_guide_bh_found', False)
+        if bh_installed:
+            txt("BlackHole found!  Now complete the routing step below.", y, (80, 220, 120)); y += 28
+        else:
+            txt("BlackHole is a free virtual driver that routes Mac audio into the visualizer.", y, (115, 115, 155)); y += 24
 
         steps = [
-            "1.  Click below to download  BlackHole 2ch  (free, 30 seconds)",
-            "2.  Install it — just double-click the .pkg, no restart needed",
-            "3.  Click  Open Audio MIDI Setup  below",
-            "4.  Press  +  (bottom-left) → Create Multi-Output Device",
-            "5.  Tick both  BlackHole 2ch  AND  your speakers / headphones",
-            "6.  Right-click the new device → Use This Device For Sound Output",
-            "7.  Come back here and click  SYSTEM AUDIO  — done!",
+            ("1", "Download  BlackHole 2ch  (free) and install the .pkg",
+             not bh_installed, "(already installed)" if bh_installed else ""),
+            ("2", "Open Audio MIDI Setup  (button below)",   False, ""),
+            ("3", "Click  +  at bottom-left  →  Create Multi-Output Device", False, ""),
+            ("4", "Tick  BlackHole 2ch  AND  your speakers / headphones", False, ""),
+            ("5", "Right-click the new Multi-Output Device  →  Use This Device For Sound Output", False, ""),
+            ("6", "Click  Done — BlackHole is set up  below  to finish", False, ""),
         ]
-        for step in steps:
-            txt(step, y, (145, 145, 175)); y += 22
-        y += 12
+        y += 8
+        for num, desc, bold, note in steps:
+            color  = (200, 200, 230) if bold else (130, 130, 160)
+            prefix = f"  {num}.  "
+            line   = prefix + desc + (f"  {note}" if note else "")
+            txt(line, y, color); y += 21
+        y += 16
 
-        cx = w // 2
-        self.btns['bh_download'] = box_btn("⬇  Download BlackHole (free)", cx - 240, y)
-        self.btns['bh_midi']     = box_btn("Open Audio MIDI Setup",         cx + 20,  y)
-        y += 46
-        self.btns['bh_close']    = box_btn("Close  (ESC)",                  cx - 110, y, 220)
+        # Row 1 — download + midi setup
+        self.btns['bh_download'] = box_btn("Download BlackHole  (free)",  cx - 252, y, 235, highlight=not bh_installed)
+        self.btns['bh_midi']     = box_btn("Open Audio MIDI Setup",        cx + 18,  y, 200)
+        y += 42
+
+        # Row 2 — check again + close
+        self.btns['bh_check'] = box_btn("Done — BlackHole is set up", cx - 252, y, 235, highlight=True)
+        self.btns['bh_close'] = box_btn("Cancel  (ESC)",               cx + 18,  y, 200)
 
     # ══════════════════════════════════════════════════════════════════════════
     # Event handling
@@ -508,6 +526,18 @@ class App:
                 open_download_page()
             elif 'bh_midi' in B and B['bh_midi'].collidepoint(mx, my):
                 open_audio_midi_setup()
+            elif 'bh_check' in B and B['bh_check'].collidepoint(mx, my):
+                bh = find_blackhole()
+                if bh:
+                    self._guide_bh_found = True
+                    self.show_setup_guide = False
+                    idx, name = bh
+                    ok = self.audio.start_mic(idx)
+                    self.status_msg = f"System audio via {name}" if ok else "BlackHole error"
+                    self.S['src'] = 'system' if ok else None
+                else:
+                    self._guide_bh_found = False
+                    self.status_msg = "BlackHole not found — make sure you installed the .pkg"
             elif 'bh_close' in B and B['bh_close'].collidepoint(mx, my):
                 self.show_setup_guide = False
             return

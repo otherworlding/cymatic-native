@@ -18,10 +18,14 @@ except ImportError:
 
 
 def find_blackhole():
-    """Return (device_index, name) of first BlackHole input device, or None."""
+    """Return (device_index, name) of first BlackHole input device, or None.
+    Forces a PortAudio device list refresh so newly installed drivers are found."""
     if not _SD_OK:
         return None
     try:
+        # Re-initialise PortAudio so macOS CoreAudio changes are picked up
+        sd._terminate()
+        sd._initialize()
         for i, d in enumerate(sd.query_devices()):
             if d['max_input_channels'] > 0 and 'blackhole' in d['name'].lower():
                 return (i, d['name'])
