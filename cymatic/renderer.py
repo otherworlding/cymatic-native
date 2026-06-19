@@ -34,14 +34,14 @@ class Renderer:
 
     # ── Patterns ──────────────────────────────────────────────────────────────
 
-    def chladni(self, w, h, m, n, m2, n2, blend, thresh, bright, col):
+    def chladni(self, w, h, m, n, thresh, bright, glow, col):
         p = self.p_chladni
-        p['u_res'].value   = (w, h)
-        p['u_m'].value     = float(m);   p['u_n'].value   = float(n)
-        p['u_m2'].value    = float(m2);  p['u_n2'].value  = float(n2)
-        p['u_blend'].value = float(blend)
+        p['u_res'].value    = (w, h)
+        p['u_m'].value      = float(m)
+        p['u_n'].value      = float(n)
         p['u_thresh'].value = float(thresh)
         p['u_bright'].value = float(bright)
+        p['u_glow'].value   = float(glow)
         p['u_col'].value    = tuple(col)
         self.vao_c.render(moderngl.TRIANGLE_STRIP)
 

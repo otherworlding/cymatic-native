@@ -67,8 +67,13 @@ class App:
         self.e_avg = self.k_avg = 0.0
         self.on_beat = False
 
-        # Chladni / Lissajous state
-        self.mode_idx   = 2
+        # Chladni state
+        self.mode_idx      = 2    # current mode index into MODES
+        self.mode_hold     = 0    # frames remaining before mode can switch again
+        self.mode_target   = 2    # target mode we're moving toward
+        self.mode_stable   = 0    # frames target has stayed the same
+
+        # Lissajous state
         self.liss_a     = 3.0
         self.liss_b     = 2.0
         self.liss_trail = []
@@ -146,9 +151,17 @@ class App:
         self.beat_flash *= 0.70
 
     def _hz_to_mode(self, hz):
-        lo, hi = math.log2(60), math.log2(8000)
-        t = (math.log2(max(60, min(8000, hz))) - lo) / (hi - lo)
-        return min(len(MODES) - 1, max(0, int(t * len(MODES))))
+        """Map a frequency to the mode index whose m²+n² best matches.
+        Real square plates resonate at f ∝ m²+n², so this is physically accurate."""
+        hz = max(50, min(10000, hz))
+        # Scale so that 50 Hz → complexity 2, 10 kHz → complexity ~200
+        target = 2.0 + (math.log2(hz / 50) / math.log2(200)) * (9**2 + 8**2 - 2)
+        best, best_d = 0, float('inf')
+        for i, (m, n) in enumerate(MODES):
+            d = abs(m*m + n*n - target)
+            if d < best_d:
+                best_d, best = d, i
+        return best
 
     # ══════════════════════════════════════════════════════════════════════════
     # Patterns
@@ -157,27 +170,53 @@ class App:
     def _draw_chladni(self, w, h, energies):
         vol = self._be(20, 20000)
 
-        if vol > 0.01:
-            dom  = self.audio.dominant_hz(self.fft)
-            tgt  = self._hz_to_mode(dom)
-            if self.on_beat or abs(tgt - self.mode_idx) > 3:
-                self.mode_idx = tgt
+        # ── Mode selection (physics-based) ────────────────────────────────────
+        if vol > 0.008:
+            dom = self.audio.dominant_hz(self.fft)
+            tgt = self._hz_to_mode(dom)
 
-        m, n   = MODES[self.mode_idx]
-        m2, n2 = m, n
-        blend  = 0.0
+            # Track how long the target has been stable
+            if tgt == self.mode_target:
+                self.mode_stable += 1
+            else:
+                self.mode_target  = tgt
+                self.mode_stable  = 0
 
-        if vol > 0.03:
-            pks = self.audio.top_peaks(self.fft, 3)
-            if len(pks) >= 2:
-                m2, n2 = MODES[self._hz_to_mode(pks[1][0])]
-                blend  = min(0.4, pks[1][1] * 0.5)
+            # Switch rules:
+            # • On a beat: switch immediately to the target
+            # • Target stable for 6+ frames and current hold expired: switch
+            # • Jump of 4+ modes: switch immediately (dramatic frequency shift)
+            jump = abs(tgt - self.mode_idx)
+            if self.mode_hold > 0:
+                self.mode_hold -= 1
+            can_switch = self.mode_hold == 0
 
-        thresh = self.S['thresh'] / 600 + vol * 0.04 + self.beat_flash * 0.05
-        bright = min(2.5, 0.3 + vol * 3.5 + self.beat_flash * 2.0)
-        col    = self._color(1.0, self._dom_band(energies))
+            if can_switch and (
+                self.on_beat or
+                self.mode_stable >= 6 or
+                jump >= 4
+            ):
+                self.mode_idx  = tgt
+                self.mode_hold = 4   # hold at least 4 frames before next change
 
-        self.rdr.chladni(w, h, m, n, m2, n2, blend, thresh, bright, col)
+        m, n = MODES[self.mode_idx]
+
+        # ── Visual parameters ─────────────────────────────────────────────────
+        # Threshold: keep it tight. "Line Width" slider 1-20 maps to 0.012-0.055.
+        base_thresh = 0.012 + (self.S['thresh'] - 1) / 19 * 0.043
+        # Beat widens lines briefly so they flash visible
+        thresh = base_thresh + self.beat_flash * 0.025
+
+        # Brightness: quiet = dim, loud = bright, beat = flash
+        bright = 0.25 + vol * 2.8 + self.beat_flash * 1.8
+        bright = min(2.8, bright)
+
+        # Glow widens on beats (1 = no extra glow, 4 = wide halo)
+        glow = 1.8 + self.beat_flash * 2.2
+
+        col = self._color(min(1.0, 0.2 + vol * 2.0), self._dom_band(energies))
+
+        self.rdr.chladni(w, h, m, n, thresh, bright, glow, col)
 
     def _draw_rings(self, w, h, energies):
         vol = self._be(20, 20000)

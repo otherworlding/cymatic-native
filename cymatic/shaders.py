@@ -12,20 +12,31 @@ void main() { gl_Position = vec4(in_vert, 0.0, 1.0); }
 CHLADNI = """
 #version 330
 uniform vec2  u_res;
-uniform float u_m, u_n, u_m2, u_n2, u_blend;
-uniform float u_thresh, u_bright;
+uniform float u_m, u_n;
+uniform float u_thresh;   // nodal line half-width  (0.01 = razor, 0.06 = wide)
+uniform float u_bright;   // overall brightness multiplier
+uniform float u_glow;     // secondary glow radius multiplier (1..4)
 uniform vec3  u_col;
 out vec4 f;
 const float PI = 3.14159265358979323846;
 void main() {
     vec2 uv = gl_FragCoord.xy / u_res * 2.0 - 1.0;
-    float v1 = cos(u_m  * PI * uv.x) * cos(u_n  * PI * uv.y)
-             - cos(u_n  * PI * uv.x) * cos(u_m  * PI * uv.y);
-    float v2 = cos(u_m2 * PI * uv.x) * cos(u_n2 * PI * uv.y)
-             - cos(u_n2 * PI * uv.x) * cos(u_m2 * PI * uv.y);
-    float v  = mix(v1, v2, clamp(u_blend, 0.0, 1.0));
-    float t  = pow(max(0.0, 1.0 - abs(v) / u_thresh), 2.0);
-    f = vec4(u_col * t * u_bright, 1.0);
+
+    // Chladni formula for a square plate with free boundaries.
+    // Nodal lines are the zero-crossings of v.
+    float v = cos(u_m * PI * uv.x) * cos(u_n * PI * uv.y)
+            - cos(u_n * PI * uv.x) * cos(u_m * PI * uv.y);
+
+    float d = abs(v);
+
+    // Sharp bright line at nodal positions
+    float line = 1.0 - smoothstep(0.0, u_thresh, d);
+
+    // Soft secondary glow so lines are visible on dark background
+    float glow = 0.35 * (1.0 - smoothstep(u_thresh, u_thresh * u_glow, d));
+
+    float intensity = clamp(line + glow, 0.0, 1.0);
+    f = vec4(u_col * intensity * u_bright, 1.0);
 }
 """
 
