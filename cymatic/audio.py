@@ -15,11 +15,12 @@ except ImportError:
 
 class AudioEngine:
     def __init__(self):
-        self._fft  = np.zeros(FFT_SIZE // 2 + 1)
-        self._lock = threading.Lock()
-        self._win  = np.hanning(FFT_SIZE)
-        self._buf  = np.zeros(FFT_SIZE)
-        self.stream = None
+        self._fft      = np.zeros(FFT_SIZE // 2 + 1)
+        self._lock     = threading.Lock()
+        self._win      = np.hanning(FFT_SIZE)
+        self._buf      = np.zeros(FFT_SIZE)
+        self.stream    = None
+        self.current_sr = SAMPLE_RATE  # updated by start_file to file's native rate
 
     # ── Internal ─────────────────────────────────────────────────────────────
 
@@ -52,8 +53,11 @@ class AudioEngine:
             return False
 
         def cb(indata, frames, t, status):
-            mono = indata[:, 0] if indata.ndim > 1 else indata.flatten()
-            self._push(mono)
+            try:
+                mono = indata[:, 0] if indata.ndim > 1 else indata.flatten()
+                self._push(mono)
+            except Exception:
+                pass
 
         try:
             self.stream = sd.InputStream(
@@ -75,41 +79,41 @@ class AudioEngine:
 
         try:
             data, sr = sf.read(path, always_2d=True, dtype='float32')
-            # Crude but fast resample via integer repeat/skip
-            if sr != SAMPLE_RATE:
-                ratio = SAMPLE_RATE / sr
-                if ratio > 1:
-                    data = np.repeat(data, int(round(ratio)), axis=0)
-                else:
-                    data = data[::int(round(1 / ratio))]
+            # Play at the file's native sample rate — no resampling needed.
+            # Store it so the FFT frequency axis stays correct.
+            self.current_sr = sr
 
             pos = [0]
 
             def cb(outdata, frames, t, status):
-                start = pos[0]
-                end   = start + frames
-                chunk = data[start:end]
+                try:
+                    start = pos[0]
+                    end   = start + frames
+                    chunk = data[start:end]
 
-                if len(chunk) < frames:
-                    # Loop
-                    pos[0] = frames - len(chunk)
-                    chunk  = np.vstack([chunk, data[:pos[0]]]) if len(chunk) else data[:frames]
-                else:
-                    pos[0] = end
+                    if len(chunk) < frames:
+                        # Loop seamlessly
+                        remainder = data[:max(0, frames - len(chunk))]
+                        chunk     = np.vstack([chunk, remainder]) if len(chunk) else data[:frames]
+                        pos[0]    = max(0, frames - (end - len(data)))
+                    else:
+                        pos[0] = end
 
-                ch = min(chunk.shape[1], outdata.shape[1])
-                outdata[:len(chunk), :ch] = chunk[:, :ch]
-                if ch < outdata.shape[1]:
-                    outdata[:, ch:] = 0
-                if len(chunk) < frames:
-                    outdata[len(chunk):] = 0
+                    ch = min(chunk.shape[1], outdata.shape[1])
+                    n  = min(len(chunk), frames)
+                    outdata[:n, :ch] = chunk[:n, :ch]
+                    if ch < outdata.shape[1]:
+                        outdata[:n, ch:] = 0
+                    if n < frames:
+                        outdata[n:] = 0
 
-                mono = chunk[:, 0]
-                self._push(mono)
+                    self._push(chunk[:n, 0])
+                except Exception:
+                    outdata[:] = 0
 
             out_ch = min(2, data.shape[1])
             self.stream = sd.OutputStream(
-                channels=out_ch, samplerate=SAMPLE_RATE,
+                channels=out_ch, samplerate=sr,
                 blocksize=1024, callback=cb,
             )
             self.stream.start()
@@ -129,29 +133,26 @@ class AudioEngine:
 
     # ── Analysis helpers ──────────────────────────────────────────────────────
 
-    @staticmethod
-    def band(fft: np.ndarray, lo: float, hi: float) -> float:
+    def band(self, fft: np.ndarray, lo: float, hi: float) -> float:
         n   = len(fft)
-        nyq = SAMPLE_RATE / 2
+        nyq = self.current_sr / 2
         a   = max(0, int(lo / nyq * n))
         b   = min(n - 1, int(hi / nyq * n))
         if b <= a:
             return 0.0
         return float(np.mean(fft[a:b + 1])) / (FFT_SIZE / 2)
 
-    @staticmethod
-    def dominant_hz(fft: np.ndarray) -> float:
+    def dominant_hz(self, fft: np.ndarray) -> float:
         n   = len(fft)
-        nyq = SAMPLE_RATE / 2
+        nyq = self.current_sr / 2
         lo  = max(2, int(60 / nyq * n))
         if lo >= n:
             return 440.0
         return (lo + int(np.argmax(fft[lo:]))) * nyq / n
 
-    @staticmethod
-    def top_peaks(fft: np.ndarray, count: int = 3):
+    def top_peaks(self, fft: np.ndarray, count: int = 3):
         n   = len(fft)
-        nyq = SAMPLE_RATE / 2
+        nyq = self.current_sr / 2
         lo  = max(2, int(60 / nyq * n))
         mx  = FFT_SIZE / 2
         out = []

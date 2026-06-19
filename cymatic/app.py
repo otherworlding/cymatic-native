@@ -120,7 +120,7 @@ class App:
     # ══════════════════════════════════════════════════════════════════════════
 
     def _be(self, lo, hi):
-        return AudioEngine.band(self.fft, lo, hi) * self.S['sensitivity'] / 8
+        return self.audio.band(self.fft, lo, hi) * self.S['sensitivity'] / 8
 
     def _energies(self):
         return [self._be(c[2], c[3]) for c in CHAKRAS]
@@ -153,7 +153,7 @@ class App:
         vol = self._be(20, 20000)
 
         if vol > 0.01:
-            dom  = AudioEngine.dominant_hz(self.fft)
+            dom  = self.audio.dominant_hz(self.fft)
             tgt  = self._hz_to_mode(dom)
             if self.on_beat or abs(tgt - self.mode_idx) > 3:
                 self.mode_idx = tgt
@@ -163,7 +163,7 @@ class App:
         blend  = 0.0
 
         if vol > 0.03:
-            pks = AudioEngine.top_peaks(self.fft, 3)
+            pks = self.audio.top_peaks(self.fft, 3)
             if len(pks) >= 2:
                 m2, n2 = MODES[self._hz_to_mode(pks[1][0])]
                 blend  = min(0.4, pks[1][1] * 0.5)
@@ -209,7 +209,7 @@ class App:
         del arr
 
         # Update a:b ratio from spectral peaks
-        pks = AudioEngine.top_peaks(self.fft, 2)
+        pks = self.audio.top_peaks(self.fft, 2)
         if len(pks) >= 2:
             ratio = pks[0][0] / max(1, pks[1][0])
             tA    = round(min(9, max(1, ratio if ratio >= 1 else 1 / ratio)))
@@ -498,19 +498,26 @@ class App:
         self.S['src'] = 'mic'
 
     def _open_file(self):
-        import tkinter as tk
-        from tkinter import filedialog
-        root = tk.Tk()
-        root.withdraw()
-        path = filedialog.askopenfilename(
-            filetypes=[
-                ("Audio", "*.mp3 *.wav *.aiff *.aif *.flac *.m4a *.ogg *.opus"),
-                ("All files", "*.*"),
-            ]
+        # Use osascript (AppleScript) — tkinter crashes inside a pygame/SDL window on macOS
+        import subprocess
+        script = (
+            'set f to choose file with prompt "Open Audio File" '
+            'of type {"public.audio","public.mp3","public.aiff-audio",'
+            '"com.apple.m4a-audio","org.xiph.flac","public.ogg-vorbis"}\n'
+            'return POSIX path of f'
         )
-        root.destroy()
-        if path:
-            self._play_file(path)
+        try:
+            result = subprocess.run(
+                ['osascript', '-e', script],
+                capture_output=True, text=True, timeout=120,
+            )
+            path = result.stdout.strip()
+            if path:
+                self._play_file(path)
+        except subprocess.TimeoutExpired:
+            pass
+        except Exception as e:
+            self.status_msg = f"File picker error: {e}"
 
     def _play_file(self, path: str):
         ok = self.audio.start_file(path)
