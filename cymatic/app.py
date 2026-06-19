@@ -369,8 +369,10 @@ class App:
 
         # Mode indicator
         if self.S['pattern'] == 'chladni':
-            m, n = MODES[self.mode_idx]
-            ml = self.font_sm.render(f"mode ({m},{n})", True, (38, 38, 58))
+            mf, nf = MODES[self.mode_from]
+            mt, nt = MODES[self.mode_to]
+            pct = int(self.blend_t * 100)
+            ml = self.font_sm.render(f"({mf},{nf})→({mt},{nt}) {pct}%", True, (38, 38, 58))
             panel.blit(ml, (x + 305, y + 5))
 
         # ── Row 2b : Color ─────────────────────────────────────────────────
