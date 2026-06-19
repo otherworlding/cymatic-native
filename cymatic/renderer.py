@@ -34,19 +34,29 @@ class Renderer:
 
     # ── Patterns ──────────────────────────────────────────────────────────────
 
-    def chladni(self, w, h, m, n, m2, n2, blend, thresh, bright, phase, col):
+    def chladni(self, w, h, ms, ns, ws, thresh, bright, col):
+        """Render modal superposition: six integer Chladni modes (ms, ns)
+        summed with live per-band audio weights (ws)."""
         p = self.p_chladni
         p['u_res'].value    = (w, h)
-        p['u_m'].value      = float(m)
-        p['u_n'].value      = float(n)
-        p['u_m2'].value     = float(m2)
-        p['u_n2'].value     = float(n2)
-        p['u_blend'].value  = float(blend)
+        self._set_array(p, 'u_m', ms)
+        self._set_array(p, 'u_n', ns)
+        self._set_array(p, 'u_w', ws)
         p['u_thresh'].value = float(thresh)
         p['u_bright'].value = float(bright)
-        p['u_phase'].value  = float(phase)
         p['u_col'].value    = tuple(col)
         self.vao_c.render(moderngl.TRIANGLE_STRIP)
+
+    @staticmethod
+    def _set_array(prog, name, values):
+        """Set a GLSL array uniform portably.  Some drivers expose the array as
+        one member (``u_m``), others element-wise (``u_m[0]``); handle both."""
+        vals = [float(v) for v in values]
+        if name in prog:
+            prog[name].value = vals
+        else:
+            for i, v in enumerate(vals):
+                prog[f'{name}[{i}]'].value = v
 
     def rings(self, w, h, srcs, amps, wls, cols, t):
         p = self.p_rings

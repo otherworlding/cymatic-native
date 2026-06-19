@@ -12,42 +12,39 @@ void main() { gl_Position = vec4(in_vert, 0.0, 1.0); }
 CHLADNI = """
 #version 330
 uniform vec2  u_res;
-uniform float u_m,  u_n;
-uniform float u_m2, u_n2;
-uniform float u_blend;
-uniform float u_thresh;
+uniform float u_m[6];      // mode m numbers (one per frequency band)
+uniform float u_n[6];      // mode n numbers
+uniform float u_w[6];      // excitation weight per mode = live audio energy
+uniform float u_thresh;    // nodal line half-width (sand thickness)
 uniform float u_bright;
-uniform float u_phase;
 uniform vec3  u_col;
 out vec4 f;
 const float PI = 3.14159265358979323846;
+
 void main() {
+    // Square plate domain x,y in [-1, 1]
     vec2 uv = gl_FragCoord.xy / u_res * 2.0 - 1.0;
-    float px = uv.x + sin(u_phase * 0.31) * 0.018;
-    float py = uv.y + cos(u_phase * 0.23) * 0.018;
 
-    // Interpolate mode numbers, not field values.
-    // This is equivalent to sweeping the plate's driving frequency between two
-    // resonances: the nodal lines deform continuously in place, just as sand
-    // physically migrates to new rest positions during a frequency sweep.
-    float mi = mix(u_m, u_m2, u_blend);
-    float ni = mix(u_n, u_n2, u_blend);
+    // Physical model: the plate's displacement is the weighted superposition
+    // of every excited resonant mode.  Each term is a TRUE integer Chladni
+    // figure, so the geometry is always authentic; as the audio spectrum
+    // shifts, the weights shift, and the combined nodal lines migrate exactly
+    // like sand redistributing on a real driven plate.
+    float W = 0.0;
+    for (int k = 0; k < 6; k++) {
+        float m = u_m[k];
+        float n = u_n[k];
+        float phi = cos(m * PI * uv.x) * cos(n * PI * uv.y)
+                  - cos(n * PI * uv.x) * cos(m * PI * uv.y);
+        W += u_w[k] * phi;
+    }
 
-    float v = cos(mi * PI * px) * cos(ni * PI * py)
-            - cos(ni * PI * px) * cos(mi * PI * py);
+    // Sand collects where the surface is motionless: |W| ~ 0 (the nodal set)
+    float d = abs(W);
+    float line = 1.0 - smoothstep(0.0, u_thresh,        d);   // crisp sand line
+    float halo = 0.28 * (1.0 - smoothstep(0.0, u_thresh * 3.0, d)); // tight glow
+    float intensity = clamp(line + halo, 0.0, 1.0);
 
-    // Second harmonic ghost peaks mid-transition, adding extra structure
-    // while the primary mode is in flux — collapses cleanly at blend=0 or 1
-    float ghost = sin(u_blend * PI) * 0.25;
-    float v2 = cos((mi + 1.0) * PI * px) * cos((ni + 1.0) * PI * py)
-             - cos((ni + 1.0) * PI * px) * cos((mi + 1.0) * PI * py);
-    v += ghost * v2;
-
-    float d = abs(v);
-    float line    = 1.0 - smoothstep(0.0,          u_thresh,        d);
-    float glow    = 0.45 * (1.0 - smoothstep(0.0,  u_thresh * 4.5,  d));
-    float ambient = 0.06 * (1.0 - smoothstep(0.0,  u_thresh * 18.0, d));
-    float intensity = clamp(line + glow + ambient, 0.0, 1.0);
     f = vec4(u_col * intensity * u_bright, 1.0);
 }
 """

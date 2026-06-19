@@ -7,7 +7,8 @@ import numpy as np
 import pygame
 import moderngl
 
-from .config import MODES, CHAKRAS, PALETTES, PALETTE_NAMES, FFT_SIZE, SAMPLE_RATE
+from .config import (MODES, CHLADNI_BANDS, CHAKRAS, PALETTES, PALETTE_NAMES,
+                     FFT_SIZE, SAMPLE_RATE)
 from .audio import AudioEngine, AUDIO_OK
 from .renderer import Renderer
 from .system_audio import find_blackhole, open_download_page, open_audio_midi_setup
@@ -67,12 +68,12 @@ class App:
         self.e_avg = self.k_avg = 0.0
         self.on_beat = False
 
-        # Chladni morph state
-        self.mode_from     = 2     # index into MODES we are blending FROM
-        self.mode_to       = 5     # index into MODES we are blending TOWARD
-        self.blend_t       = 0.0   # morph progress: 0 = at mode_from, 1 = at mode_to
-        self.next_target   = 5     # centroid-derived target, queued for next morph
-        self.vol_peak      = 0.0   # peak-hold envelope so image sustains between sounds
+        # Chladni modal-superposition state.
+        # One smoothed excitation weight per frequency band; the plate is the
+        # weighted sum of all band modes (see _draw_chladni / config.CHLADNI_BANDS).
+        self.cn_w     = [0.0] * len(CHLADNI_BANDS)  # per-band envelope (attack/release)
+        self.cn_ravg  = 1e-4                        # long-run level, for adaptive floor
+        self.vol_peak = 0.0                         # peak-hold so brightness sustains
         self.centroid_smooth = 300.0
 
         # Lissajous state
@@ -170,51 +171,61 @@ class App:
     # ══════════════════════════════════════════════════════════════════════════
 
     def _draw_chladni(self, w, h, energies):
-        sub_bass, bass, mid, presence, air = self.audio.band_energies_5(self.fft)
-        flux = self.audio.spectral_flux(self.fft)
+        # ── 1. Measure how hard each band drives its plate mode ───────────────
+        # Raw band energy = how much the audio excites that resonance right now.
+        # Sensitivity-independent here so pattern shape doesn't depend on the
+        # brightness slider (sensitivity only scales brightness, step 4).
+        raw = [self.audio.band(self.fft, lo, hi) for (_, _, lo, hi) in CHLADNI_BANDS]
 
-        total = sub_bass + bass + mid + presence + air
-        self.vol_peak = max(total, self.vol_peak * 0.965)
+        # ── 2. Per-band envelope: fast attack, slow release ───────────────────
+        # Sand jumps to a new figure instantly when a frequency hits (attack),
+        # then lingers as the sound fades (release) — so the image sustains and
+        # shifts continuously instead of flickering off between transients.
+        for i, target in enumerate(raw):
+            cur = self.cn_w[i]
+            rate = 0.55 if target > cur else 0.05
+            self.cn_w[i] = cur + (target - cur) * rate
 
-        # ── Spectral centroid → target mode ───────────────────────────────────
+        peak = max(self.cn_w)
+        self.cn_ravg += (peak - self.cn_ravg) * 0.01   # tracks the music's level
+
+        # ── 3. Build superposition weights ────────────────────────────────────
+        # Adaptive floor (scaled to the music's general level) biased toward the
+        # simple low-order modes, so during quiet passages a clean low figure
+        # remains rather than a busy blur.  Real audio overrides it when present.
+        floor = self.cn_ravg * 0.18
+        prior = (1.0, 0.6, 0.38, 0.24, 0.15, 0.09)
+        weights = [self.cn_w[i] + floor * prior[i] for i in range(len(CHLADNI_BANDS))]
+
+        # Sharpen so the loudest band's geometry leads while quieter bands add
+        # subtle interference texture; then normalise for a stable line width.
+        weights = [wv ** 1.5 for wv in weights]
+        tot = sum(weights)
+        if tot > 1e-9:
+            weights = [wv / tot for wv in weights]
+
+        ms = [b[0] for b in CHLADNI_BANDS]
+        ns = [b[1] for b in CHLADNI_BANDS]
+
+        # ── 4. Brightness — overall level with peak-hold, plus beat punch ─────
+        sens  = self.S['sensitivity'] / 8.0
+        level = sum(self.cn_w) * sens
+        self.vol_peak = max(level, self.vol_peak * 0.96)
+        bright = 0.55 + min(self.vol_peak * 2.4, 2.2) + self.beat_flash * 0.8
+        bright = min(3.2, bright)
+
+        # ── 5. Line width (sand thickness) from the LINE WIDTH slider ─────────
+        thresh = 0.030 + (self.S['thresh'] - 1) / 19 * 0.075
+        thresh += self.beat_flash * 0.010
+
+        # ── 6. Colour follows the spectral centroid (pitch) ───────────────────
         centroid = self.audio.spectral_centroid(self.fft)
-        self.centroid_smooth += (centroid - self.centroid_smooth) * 0.07
-        self.next_target = self._hz_to_mode(self.centroid_smooth)
+        self.centroid_smooth += (centroid - self.centroid_smooth) * 0.06
+        hue = 0.50 + (self.centroid_smooth - 300) / 7000 * 0.45
+        hue = max(0.0, min(1.0, hue)) + self.beat_flash * 0.25
+        col = self._color(hue, self._dom_band(energies))
 
-        # ── Morph speed: bass pumps it, flux spikes on transients ────────────
-        base_speed = 0.010 + bass * 0.018 + sub_bass * 0.012
-        flux_boost = min(flux * 0.25, 0.04)
-        beat_boost = self.beat_flash * 0.06
-        self.blend_t += base_speed + flux_boost + beat_boost
-        self.blend_t  = min(1.0, self.blend_t)
-
-        if self.blend_t >= 1.0:
-            self.mode_from = self.mode_to
-            self.mode_to   = self.next_target
-            self.blend_t   = 0.0
-            if self.mode_from == self.mode_to:
-                self.mode_to = (self.mode_to + 1) % len(MODES)
-
-        mf, nf = MODES[self.mode_from]
-        mt, nt = MODES[self.mode_to]
-
-        # ── Line width: slider + presence (snare/attack) flares edges ────────
-        thresh = 0.020 + (self.S['thresh'] - 1) / 19 * 0.052
-        thresh += presence * 0.018 + self.beat_flash * 0.014
-
-        # ── Brightness: sustained by envelope; air band adds shimmer ─────────
-        bright = 0.60 + self.vol_peak * 1.8 + air * 1.2 + self.beat_flash * 1.0
-        bright = min(3.0, bright)
-
-        # ── Phase drift: mid energy speeds up the slow animation ─────────────
-        phase = self.S['t'] * (0.010 + mid * 0.020)
-
-        # ── Hue: tracks spectral centroid; shifts toward warm on beats ────────
-        hue_pos = 0.55 + (self.centroid_smooth - 300) / 8000 * 0.4
-        hue_pos = max(0.0, min(1.0, hue_pos)) + self.beat_flash * 0.3
-        col = self._color(hue_pos, self._dom_band(energies))
-
-        self.rdr.chladni(w, h, mf, nf, mt, nt, self.blend_t, thresh, bright, phase, col)
+        self.rdr.chladni(w, h, ms, ns, weights, thresh, bright, col)
 
     def _draw_rings(self, w, h, energies):
         vol = self._be(20, 20000)
@@ -370,12 +381,12 @@ class App:
         self.btns['rings']   = btn("Rings",     self.S['pattern'] == 'rings',     x + 148, y, 62)
         self.btns['liss']    = btn("Lissajous", self.S['pattern'] == 'lissajous', x + 215, y, 80)
 
-        # Mode indicator
+        # Mode indicator — show the leading (loudest) mode in the superposition
         if self.S['pattern'] == 'chladni':
-            mf, nf = MODES[self.mode_from]
-            mt, nt = MODES[self.mode_to]
-            pct = int(self.blend_t * 100)
-            ml = self.font_sm.render(f"({mf},{nf})→({mt},{nt}) {pct}%", True, (38, 38, 58))
+            di = max(range(len(self.cn_w)), key=lambda i: self.cn_w[i])
+            m, n = CHLADNI_BANDS[di][0], CHLADNI_BANDS[di][1]
+            ml = self.font_sm.render(f"{len(CHLADNI_BANDS)} modes  lead ({m},{n})",
+                                     True, (38, 38, 58))
             panel.blit(ml, (x + 305, y + 5))
 
         # ── Row 2b : Color ─────────────────────────────────────────────────
@@ -676,6 +687,12 @@ class App:
     def run(self):
         while self.running:
             w, h = pygame.display.get_surface().get_size()
+
+            # Skip rendering while minimised / zero-sized (GL calls would fail)
+            if w < 2 or h < 2:
+                self._events(w, h)
+                self.clock.tick(30)
+                continue
 
             self.fft = self.audio.get_fft()
             self._beat()
