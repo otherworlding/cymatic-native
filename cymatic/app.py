@@ -1,5 +1,6 @@
 """Main application — window, loop, patterns, UI."""
 
+import os
 import math
 from pathlib import Path
 
@@ -80,6 +81,10 @@ class App:
         self.vol_peak = 0.0                         # peak-hold so brightness sustains
         self.centroid_smooth = 300.0
         self.liquid_t = 0.0                         # liquid show clock (accumulates)
+        # Per-band chakra colour (by each band's centre frequency) — used to
+        # tint each mode's nodal lines in Chakra colour mode.
+        self.cn_chakra_cols = [self._chakra_color_for_hz((lo * hi) ** 0.5)
+                               for (_, _, lo, hi) in CHLADNI_BANDS]
 
         # Lissajous state
         self.liss_a     = 3.0
@@ -111,6 +116,7 @@ class App:
         self.font_sm     = pygame.font.SysFont('helvetica', 11)
         self.ui_surf     = None
         self.ui_tex      = None   # persistent GPU texture for the UI overlay
+        self._font_cache = {}     # px size → SysFont, for resolution scaling
 
         # UI interaction maps (populated by _draw_panel)
         self.btns      = {}   # name → screen Rect
@@ -137,6 +143,15 @@ class App:
         stops = self.random_pal if cm == 'random' else PALETTES[PALETTE_NAMES[self.S['palette_idx']]]
         c = _gradient(stops, t)
         return (c[0] / 255, c[1] / 255, c[2] / 255)
+
+    def _chakra_color_for_hz(self, hz):
+        """Return the chakra colour (0–1 RGB) whose frequency range covers hz."""
+        for _name, color, lo, hi in CHAKRAS:
+            if lo <= hz <= hi:
+                return (color[0] / 255, color[1] / 255, color[2] / 255)
+        # Below the first or above the last range → clamp to nearest end
+        color = CHAKRAS[0][1] if hz < CHAKRAS[0][2] else CHAKRAS[-1][1]
+        return (color[0] / 255, color[1] / 255, color[2] / 255)
 
     # ══════════════════════════════════════════════════════════════════════════
     # Audio helpers
@@ -235,7 +250,11 @@ class App:
         hue = max(0.0, min(1.0, hue)) + self.beat_flash * 0.25
         col = self._color(hue, self._dom_band(energies))
 
-        self.rdr.chladni(w, h, ms, ns, weights, cas, sas, thresh, bright, col)
+        # In Chakra mode each mode is tinted by its band's chakra colour, with
+        # brightness/width from that band's activity (see the CHLADNI shader).
+        chakra = 1 if self.S['color_mode'] == 'chakra' else 0
+        self.rdr.chladni(w, h, ms, ns, weights, cas, sas, thresh, bright, col,
+                         chakra, self.cn_chakra_cols)
 
     def _palette_stops(self):
         """Current colour palette as five (r,g,b) tuples in 0–1, for the GPU."""
@@ -336,6 +355,20 @@ class App:
 
     PANEL_H = 180
 
+    def _ui_font(self, px):
+        """Cached font at an arbitrary pixel size (for resolution scaling)."""
+        px = max(8, int(px))
+        f = self._font_cache.get(px)
+        if f is None:
+            f = pygame.font.SysFont('helvetica', px)
+            self._font_cache[px] = f
+        return f
+
+    def _ui_scale(self, h):
+        """UI scale factor — grows the panel/buttons on high-res displays so
+        controls stay readable at 4K instead of a tiny strip."""
+        return max(1.0, min(3.0, h / 950.0))
+
     def _draw_ui(self, w, h):
         if self.ui_surf is None or self.ui_surf.get_size() != (w, h):
             self.ui_surf = pygame.Surface((w, h), pygame.SRCALPHA)
@@ -350,47 +383,58 @@ class App:
             return
 
         if not self.show_panel:
-            hint = self.font_sm.render(
+            s = self._ui_scale(h)
+            hint = self._ui_font(11 * s).render(
                 "H = controls   F = fullscreen   K = kaleidoscope",
-                True, (55, 55, 75))
-            self.ui_surf.blit(hint, (w // 2 - hint.get_width() // 2, h - 16))
+                True, (70, 70, 95))
+            self.ui_surf.blit(hint, (w // 2 - hint.get_width() // 2,
+                                     h - int(24 * s)))
             return
 
-        PH = self.PANEL_H
+        s   = self._ui_scale(h)
+        PH  = int(self.PANEL_H * s)
+        fsm = self._ui_font(11 * s)
         panel = pygame.Surface((w, PH), pygame.SRCALPHA)
         panel.fill((5, 5, 14, 220))
 
         self.btns = {}
         self.bars = {}
 
-        # ── helper closures ────────────────────────────────────────────────
+        def S(v):                      # scale a design-unit length to pixels
+            return int(v * s)
+
+        # ── helper closures (call sites pass design units; we scale here) ───
 
         def btn(label, active, bx, by, bw=90, bh=22, dim=False):
+            BX, BY, BW, BH = S(bx), S(by), S(bw), S(bh)
             fc = (38, 22, 210) if active else (14, 14, 28)
             bc = (80, 60, 255) if active else (34, 34, 54)
             tc = (255, 255, 255) if active else (65, 65, 80) if dim else (110, 110, 135)
-            pygame.draw.rect(panel, fc, (bx, by, bw, bh), border_radius=4)
-            pygame.draw.rect(panel, bc, (bx, by, bw, bh), 1, border_radius=4)
-            lbl = self.font_sm.render(label, True, tc)
-            panel.blit(lbl, (bx + bw // 2 - lbl.get_width() // 2,
-                              by + bh // 2 - lbl.get_height() // 2))
-            return pygame.Rect(bx, h - PH + by, bw, bh)
+            rad = max(2, S(4))
+            pygame.draw.rect(panel, fc, (BX, BY, BW, BH), border_radius=rad)
+            pygame.draw.rect(panel, bc, (BX, BY, BW, BH), max(1, S(1)), border_radius=rad)
+            lbl = fsm.render(label, True, tc)
+            panel.blit(lbl, (BX + BW // 2 - lbl.get_width() // 2,
+                              BY + BH // 2 - lbl.get_height() // 2))
+            return pygame.Rect(BX, h - PH + BY, BW, BH)
 
         def sldr(label, key, val, lo, hi, sx, sy, sw=125):
-            lbl = self.font_sm.render(label, True, (65, 65, 88))
-            panel.blit(lbl, (sx, sy + 5))
-            bx, by = sx + 82, sy + 9
-            pygame.draw.rect(panel, (22, 22, 42), (bx, by, sw, 4), border_radius=2)
+            SX, SY, SW = S(sx), S(sy), S(sw)
+            lbl = fsm.render(label, True, (65, 65, 88))
+            panel.blit(lbl, (SX, SY + S(5)))
+            bx, by = SX + S(82), SY + S(9)
+            th = max(2, S(4))
+            pygame.draw.rect(panel, (22, 22, 42), (bx, by, SW, th), border_radius=max(1, S(2)))
             t  = max(0.0, min(1.0, (val - lo) / (hi - lo)))
-            kx = int(bx + t * sw)
-            pygame.draw.rect(panel, (28, 22, 68), (bx, by, int(t * sw), 4), border_radius=2)
-            pygame.draw.circle(panel, (96, 80, 255), (kx, by + 2), 6)
+            kx = int(bx + t * SW)
+            pygame.draw.rect(panel, (28, 22, 68), (bx, by, int(t * SW), th), border_radius=max(1, S(2)))
+            pygame.draw.circle(panel, (96, 80, 255), (kx, by + th // 2), max(4, S(6)))
             # Store screen-space bar rect for dragging
-            self.bars[key] = (bx, h - PH + by - 7, sw, lo, hi)
+            self.bars[key] = (bx, h - PH + by - S(7), SW, lo, hi)
 
         def row_lbl(text, sx, sy):
-            l = self.font_sm.render(text, True, (55, 55, 78))
-            panel.blit(l, (sx, sy + 5))
+            l = fsm.render(text, True, (55, 55, 78))
+            panel.blit(l, (S(sx), S(sy) + S(5)))
 
         # ── Row 1 : Audio source ───────────────────────────────────────────
         x, y = 10, 10
@@ -400,8 +444,8 @@ class App:
         self.btns['file']   = btn("OPEN FILE",       self.S['src'] == 'file',   x + 288, y, 85)
         self.btns['midi']   = btn("Audio MIDI Setup", False,                    x + 378, y, 122)
 
-        st = self.font_sm.render(self.status_msg, True, (55, 55, 78))
-        panel.blit(st, (w - st.get_width() - 10, y + 5))
+        st = fsm.render(self.status_msg, True, (55, 55, 78))
+        panel.blit(st, (w - st.get_width() - S(10), S(y) + S(5)))
 
         # ── Row 2 : Pattern ────────────────────────────────────────────────
         y += 34
@@ -414,9 +458,9 @@ class App:
         if self.S['pattern'] == 'chladni':
             di = max(range(len(self.cn_w)), key=lambda i: self.cn_w[i])
             m, n = CHLADNI_BANDS[di][0], CHLADNI_BANDS[di][1]
-            ml = self.font_sm.render(f"{len(CHLADNI_BANDS)} modes  lead ({m},{n})",
-                                     True, (38, 38, 58))
-            panel.blit(ml, (x + 320, y + 5))
+            ml = fsm.render(f"{len(CHLADNI_BANDS)} modes  lead ({m},{n})",
+                            True, (38, 38, 58))
+            panel.blit(ml, (S(x + 320), S(y) + S(5)))
 
         # ── Row 2b : Color ─────────────────────────────────────────────────
         cx2 = x + 430
@@ -443,10 +487,10 @@ class App:
         sldr("ZOOM",       'zoom',       self.S['zoom'] * 100,        30, 350,  x + 690, y, 115)
 
         # Help line
-        hl = self.font_sm.render(
+        hl = fsm.render(
             "H=hide panel   F=fullscreen   K=kaleidoscope   drag files to play",
             True, (38, 38, 55))
-        panel.blit(hl, (w // 2 - hl.get_width() // 2, PH - 14))
+        panel.blit(hl, (w // 2 - hl.get_width() // 2, PH - S(14)))
 
         self.ui_surf.blit(panel, (0, h - PH))
 
@@ -574,11 +618,13 @@ class App:
                 self._play_file(ev.file)
 
     def _toggle_fullscreen(self):
-        """Switch between windowed and true fullscreen at the monitor's native
-        resolution.  pygame's toggle_fullscreen() is unreliable with OpenGL on
-        macOS (it keeps the old buffer size centred on the screen), so we set a
-        fresh display mode and resize the GPU framebuffer to match — this fills
-        a 4K display at full resolution instead of a small centred image."""
+        """Switch between windowed and fullscreen.
+
+        A real FULLSCREEN mode switch is unreliable with OpenGL on macOS — it
+        reverts to the old resolution when the requested size isn't an exact
+        hardware video mode (e.g. on a scaled 4K display).  Instead we use a
+        borderless window (NOFRAME) sized to the whole desktop and pinned to
+        (0,0): this fills the screen at full resolution and never reverts."""
         self.fullscreen = not self.fullscreen
         gl = pygame.OPENGL | pygame.DOUBLEBUF
 
@@ -590,8 +636,10 @@ class App:
                 info = pygame.display.Info()
                 dw, dh = info.current_w, info.current_h
             size = (dw, dh)
-            self.win = pygame.display.set_mode(size, gl | pygame.FULLSCREEN)
+            os.environ['SDL_VIDEO_WINDOW_POS'] = '0,0'
+            self.win = pygame.display.set_mode(size, gl | pygame.NOFRAME)
         else:
+            os.environ.pop('SDL_VIDEO_WINDOW_POS', None)
             size = self.windowed_size
             self.win = pygame.display.set_mode(size, gl | pygame.RESIZABLE)
 

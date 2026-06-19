@@ -34,10 +34,12 @@ class Renderer:
 
     # ── Patterns ──────────────────────────────────────────────────────────────
 
-    def chladni(self, w, h, ms, ns, ws, cas, sas, thresh, bright, col):
-        """Render modal superposition: six integer Chladni modes (ms, ns)
-        summed with live per-band audio weights (ws).  cas/sas are the
-        cos/sin of each mode's symmetric↔antisymmetric mixing angle."""
+    def chladni(self, w, h, ms, ns, ws, cas, sas, thresh, bright, col,
+                chakra=0, mcol=None):
+        """Render modal superposition: integer Chladni modes (ms, ns) summed
+        with live per-band audio weights (ws).  cas/sas are the cos/sin of each
+        mode's symmetric↔antisymmetric mixing angle.  When chakra=1, each mode
+        is drawn in its own colour from mcol (per-band chakra colours)."""
         p = self.p_chladni
         p['u_res'].value    = (w, h)
         self._set_array(p, 'u_m',  ms)
@@ -48,6 +50,9 @@ class Renderer:
         p['u_thresh'].value = float(thresh)
         p['u_bright'].value = float(bright)
         p['u_col'].value    = tuple(col)
+        p['u_chakra'].value = int(chakra)
+        self._set_vec3_array(p, 'u_mcol', mcol if mcol is not None
+                             else [(0.0, 0.0, 0.0)] * len(ms))
         self.vao_c.render(moderngl.TRIANGLE_STRIP)
 
     def liquid(self, w, h, t, bass, mid, treble, level, warp, pal):

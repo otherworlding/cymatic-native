@@ -20,6 +20,8 @@ uniform float u_sa[16];    // sin(mix angle)
 uniform float u_thresh;    // nodal line half-width (sand thickness)
 uniform float u_bright;
 uniform vec3  u_col;
+uniform int   u_chakra;    // 0 = single-colour summed field, 1 = per-mode chakra
+uniform vec3  u_mcol[16];  // per-mode chakra colour (by band frequency)
 out vec4 f;
 const int   N  = 16;       // must match len(config.CHLADNI_BANDS)
 const float PI = 3.14159265358979323846;
@@ -27,6 +29,28 @@ const float PI = 3.14159265358979323846;
 void main() {
     // Square plate domain x,y in [-1, 1]
     vec2 uv = gl_FragCoord.xy / u_res * 2.0 - 1.0;
+
+    if (u_chakra == 1) {
+        // Chakra mode: each frequency band draws ITS OWN nodal lines in the
+        // chakra colour for that frequency, and the line's brightness AND width
+        // scale with how active that band is — so you read the spectrum
+        // directly as coloured sand: red bass figures, violet cymbal grids,
+        // each glowing in proportion to how much of that range is sounding.
+        vec3 c = vec3(0.0);
+        for (int k = 0; k < N; k++) {
+            float A = cos(u_m[k] * PI * uv.x) * cos(u_n[k] * PI * uv.y);
+            float B = cos(u_n[k] * PI * uv.x) * cos(u_m[k] * PI * uv.y);
+            float phi = u_ca[k] * A + u_sa[k] * B;
+            float d  = abs(phi);
+            float wk = u_w[k];                          // band activity (0..1)
+            float tw = u_thresh * (0.5 + 3.0 * wk);     // width grows with energy
+            float line = 1.0 - smoothstep(0.0, tw,        d);
+            float glow = 0.3 * (1.0 - smoothstep(0.0, tw * 3.0, d));
+            c += u_mcol[k] * (line + glow) * (0.25 + 4.0 * wk);
+        }
+        f = vec4(c * u_bright, 1.0);
+        return;
+    }
 
     // Physical model: the plate's displacement is the weighted superposition
     // of every excited resonant mode.  The (m,n) and (n,m) modes are degenerate
