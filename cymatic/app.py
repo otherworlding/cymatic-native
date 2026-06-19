@@ -2,17 +2,19 @@
 
 import os
 import math
+import threading
 from pathlib import Path
 
 import numpy as np
 import pygame
 import moderngl
 
-from .config import (CHLADNI_BANDS, CHAKRAS, PALETTES, PALETTE_NAMES,
+from .config import (CHLADNI_BANDS, CHAKRAS, SOLFEGGIO, PALETTES, PALETTE_NAMES,
                      FFT_SIZE, SAMPLE_RATE)
 from .audio import AudioEngine, AUDIO_OK
 from .renderer import Renderer
 from .system_audio import find_blackhole, open_download_page, open_audio_midi_setup
+from .now_playing import current_track
 
 
 def _lerp(a, b, t):
@@ -81,10 +83,12 @@ class App:
         self.vol_peak = 0.0                         # peak-hold so brightness sustains
         self.centroid_smooth = 300.0
         self.liquid_t = 0.0                         # liquid show clock (accumulates)
-        # Per-band chakra colour (by each band's centre frequency) — used to
-        # tint each mode's nodal lines in Chakra colour mode.
-        self.cn_chakra_cols = [self._chakra_color_for_hz((lo * hi) ** 0.5)
-                               for (_, _, lo, hi) in CHLADNI_BANDS]
+        # Per-band colours by each band's centre frequency — used to tint each
+        # mode's nodal lines in Chakra (spread) and Solfeggio (literal) modes.
+        self.cn_chakra_cols    = [self._chakra_color_for_hz((lo * hi) ** 0.5)
+                                  for (_, _, lo, hi) in CHLADNI_BANDS]
+        self.cn_solfeggio_cols = [self._solfeggio_color_for_hz((lo * hi) ** 0.5)
+                                  for (_, _, lo, hi) in CHLADNI_BANDS]
 
         # Lissajous state
         self.liss_a     = 3.0
@@ -108,6 +112,15 @@ class App:
         self.fullscreen    = False
         self.windowed_size = (self.WIN_W, self.WIN_H)
 
+        # Auto-hide controls after a few idle seconds; reappear on mouse move
+        self.last_activity   = pygame.time.get_ticks()
+        self.idle_hide_ms    = 3000
+        self.panel_idle_hidden = False
+
+        # Now-playing track (best-effort, from Music/Spotify) — toggled with N
+        self.show_now_playing = False
+        self.now_playing      = ""
+
         # UI
         self.show_panel  = True
         self.show_picker = True
@@ -127,8 +140,22 @@ class App:
         self.clock   = pygame.time.Clock()
         self.running = True
 
+        # Background poller for the now-playing track (osascript is slow ~100ms,
+        # so it runs off the render thread and only while the overlay is on).
+        threading.Thread(target=self._now_playing_loop, daemon=True).start()
+
         # Start default mic so audio is ready immediately
         self.audio.start_mic()
+
+    def _now_playing_loop(self):
+        import time
+        while self.running:
+            if self.show_now_playing:
+                self.now_playing = current_track()
+                time.sleep(2.0)
+            else:
+                self.now_playing = ""
+                time.sleep(0.5)
 
     # ══════════════════════════════════════════════════════════════════════════
     # Color
@@ -136,8 +163,9 @@ class App:
 
     def _color(self, t: float, band: int = 0):
         cm = self.S['color_mode']
-        if cm == 'chakra':
-            r, g, b = CHAKRAS[min(band, 6)][1]
+        if cm in ('chakra', 'solfeggio'):
+            table = SOLFEGGIO if cm == 'solfeggio' else CHAKRAS
+            r, g, b = table[min(band, 6)][1]
             f = max(0.0, min(1.0, 0.1 + 0.9 * t))
             return (r * f / 255, g * f / 255, b * f / 255)
         stops = self.random_pal if cm == 'random' else PALETTES[PALETTE_NAMES[self.S['palette_idx']]]
@@ -151,6 +179,16 @@ class App:
                 return (color[0] / 255, color[1] / 255, color[2] / 255)
         # Below the first or above the last range → clamp to nearest end
         color = CHAKRAS[0][1] if hz < CHAKRAS[0][2] else CHAKRAS[-1][1]
+        return (color[0] / 255, color[1] / 255, color[2] / 255)
+
+    def _solfeggio_color_for_hz(self, hz):
+        """Return the colour of the nearest Solfeggio tone (log-distance)."""
+        best, best_d = SOLFEGGIO[0], float('inf')
+        for entry in SOLFEGGIO:
+            d = abs(math.log(hz + 1e-6) - math.log(entry[0]))
+            if d < best_d:
+                best_d, best = d, entry
+        color = best[1]
         return (color[0] / 255, color[1] / 255, color[2] / 255)
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -250,11 +288,17 @@ class App:
         hue = max(0.0, min(1.0, hue)) + self.beat_flash * 0.25
         col = self._color(hue, self._dom_band(energies))
 
-        # In Chakra mode each mode is tinted by its band's chakra colour, with
-        # brightness/width from that band's activity (see the CHLADNI shader).
-        chakra = 1 if self.S['color_mode'] == 'chakra' else 0
+        # In Chakra / Solfeggio modes each mode is tinted by its band's colour,
+        # with brightness/width from that band's activity (see CHLADNI shader).
+        cm = self.S['color_mode']
+        if cm == 'solfeggio':
+            per_mode, mcol = 1, self.cn_solfeggio_cols
+        elif cm == 'chakra':
+            per_mode, mcol = 1, self.cn_chakra_cols
+        else:
+            per_mode, mcol = 0, self.cn_chakra_cols
         self.rdr.chladni(w, h, ms, ns, weights, cas, sas, thresh, bright, col,
-                         chakra, self.cn_chakra_cols)
+                         per_mode, mcol)
 
     def _palette_stops(self):
         """Current colour palette as five (r,g,b) tuples in 0–1, for the GPU."""
@@ -263,6 +307,8 @@ class App:
             stops = self.random_pal
         elif cm == 'chakra':
             stops = [c[1] for c in CHAKRAS]
+        elif cm == 'solfeggio':
+            stops = [c[1] for c in SOLFEGGIO]
         else:
             stops = PALETTES[PALETTE_NAMES[self.S['palette_idx']]]
         stops = (stops + stops)[:5]          # ensure at least five
@@ -382,16 +428,30 @@ class App:
             self._draw_setup_guide(w, h)
             return
 
+        s = self._ui_scale(h)
+
+        # Now-playing track name (top centre) — shown even when controls hide
+        if self.show_now_playing and self.now_playing:
+            npf = self._ui_font(15 * s)
+            lbl = npf.render("♪  " + self.now_playing, True, (200, 200, 225))
+            bw, bh = lbl.get_width() + int(28 * s), lbl.get_height() + int(12 * s)
+            bg = pygame.Surface((bw, bh), pygame.SRCALPHA)
+            bg.fill((5, 5, 14, 170))
+            self.ui_surf.blit(bg, (w // 2 - bw // 2, int(14 * s)))
+            self.ui_surf.blit(lbl, (w // 2 - lbl.get_width() // 2, int(20 * s)))
+
+        # Auto-hidden (idle): keep the immersive view clean — no panel, no hint
+        if self.panel_idle_hidden:
+            return
+
         if not self.show_panel:
-            s = self._ui_scale(h)
             hint = self._ui_font(11 * s).render(
-                "H = controls   F = fullscreen   K = kaleidoscope",
+                "H = controls   F = fullscreen   K = kaleidoscope   N = song",
                 True, (70, 70, 95))
             self.ui_surf.blit(hint, (w // 2 - hint.get_width() // 2,
                                      h - int(24 * s)))
             return
 
-        s   = self._ui_scale(h)
         PH  = int(self.PANEL_H * s)
         fsm = self._ui_font(11 * s)
         panel = pygame.Surface((w, PH), pygame.SRCALPHA)
@@ -463,13 +523,14 @@ class App:
             panel.blit(ml, (S(x + 320), S(y) + S(5)))
 
         # ── Row 2b : Color ─────────────────────────────────────────────────
-        cx2 = x + 430
+        cx2 = x + 420
         row_lbl("COLOR", cx2, y)
-        self.btns['pal'] = btn("Palette", self.S['color_mode'] == 'palette', cx2 + 52, y, 65)
-        self.btns['rnd'] = btn("Random",  self.S['color_mode'] == 'random',  cx2 + 122, y, 65)
-        self.btns['chk'] = btn("Chakra",  self.S['color_mode'] == 'chakra',  cx2 + 192, y, 65)
+        self.btns['pal']  = btn("Palette",   self.S['color_mode'] == 'palette',   cx2 + 48,  y, 58)
+        self.btns['rnd']  = btn("Random",    self.S['color_mode'] == 'random',    cx2 + 110, y, 58)
+        self.btns['chk']  = btn("Chakra",    self.S['color_mode'] == 'chakra',    cx2 + 172, y, 58)
+        self.btns['solf'] = btn("Solfeggio", self.S['color_mode'] == 'solfeggio', cx2 + 234, y, 74)
         pname = PALETTE_NAMES[self.S['palette_idx']]
-        self.btns['pcyc'] = btn(f"< {pname} >", False, cx2 + 264, y, 90)
+        self.btns['pcyc'] = btn(f"< {pname} >", False, cx2 + 312, y, 86)
 
         # ── Row 3 : Main sliders ───────────────────────────────────────────
         y += 34
@@ -488,7 +549,7 @@ class App:
 
         # Help line
         hl = fsm.render(
-            "H=hide panel   F=fullscreen   K=kaleidoscope   drag files to play",
+            "H=hide  F=fullscreen  K=kaleidoscope  N=song name  drag files to play",
             True, (38, 38, 55))
         panel.blit(hl, (w // 2 - hl.get_width() // 2, PH - S(14)))
 
@@ -598,9 +659,11 @@ class App:
                 self.ui_surf   = None
 
             elif ev.type == pygame.KEYDOWN:
+                self.last_activity = pygame.time.get_ticks()
                 self._key(ev.key)
 
             elif ev.type == pygame.MOUSEBUTTONDOWN:
+                self.last_activity = pygame.time.get_ticks()
                 if ev.button == 1:
                     self._click(*ev.pos, w, h)
                 elif ev.button == 4:
@@ -611,8 +674,10 @@ class App:
             elif ev.type == pygame.MOUSEBUTTONUP:
                 self.dragging = None
 
-            elif ev.type == pygame.MOUSEMOTION and ev.buttons[0]:
-                self._drag(*ev.pos)
+            elif ev.type == pygame.MOUSEMOTION:
+                self.last_activity = pygame.time.get_ticks()
+                if ev.buttons[0]:
+                    self._drag(*ev.pos)
 
             elif ev.type == pygame.DROPFILE:
                 self._play_file(ev.file)
@@ -665,6 +730,10 @@ class App:
             self._toggle_fullscreen()
         elif key == pygame.K_k:
             self.S['kaleidoscope'] = not self.S['kaleidoscope']
+        elif key == pygame.K_n:
+            self.show_now_playing = not self.show_now_playing
+            if not self.show_now_playing:
+                self.now_playing = ""
         elif key == pygame.K_r:
             self.random_pal = _rand_pal()
             self.S['color_mode'] = 'random'
@@ -699,9 +768,10 @@ class App:
                 self.show_setup_guide = False
             return
 
-        # Slider drag start
+        # Slider drag start (clickable height scales with the UI)
+        grab = int(16 * self._ui_scale(h))
         for key, (bx, by, sw, lo, hi) in self.bars.items():
-            if bx <= mx <= bx + sw and by <= my <= by + 14:
+            if bx <= mx <= bx + sw and by <= my <= by + grab:
                 self.dragging = key
                 self._drag(mx, my)
                 return
@@ -722,6 +792,7 @@ class App:
         elif hit('pal'):  self.S['color_mode'] = 'palette'
         elif hit('rnd'):  self.S['color_mode'] = 'random'; self.random_pal = _rand_pal()
         elif hit('chk'):  self.S['color_mode'] = 'chakra'
+        elif hit('solf'): self.S['color_mode'] = 'solfeggio'
         elif hit('pcyc'):
             self.S['palette_idx'] = (self.S['palette_idx'] + 1) % len(PALETTE_NAMES)
             self.S['color_mode']  = 'palette'
@@ -735,8 +806,10 @@ class App:
         t   = max(0.0, min(1.0, (mx - bx) / sw))
         val = lo + (hi - lo) * t
         key = self.dragging
-        if key == 'segments':   val = int(round(val))
-        if key == 'spin_speed': val = val / 40000
+        # Invert the display scaling each slider applied in sldr()
+        if   key == 'segments':   val = int(round(val))
+        elif key == 'spin_speed': val = val / 40000
+        elif key == 'zoom':       val = val / 100      # displayed as zoom*100
         self.S[key] = val
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -807,6 +880,14 @@ class App:
             self.S['t'] += 1.0
             if self.S['kaleidoscope']:
                 self.S['rot'] += self.S['spin_speed']
+
+            # Auto-hide the controls (and cursor) after a few idle seconds; any
+            # mouse move resets last_activity (see _events) and brings them back.
+            # Never hide while a modal overlay (picker / setup guide) needs clicks.
+            idle    = pygame.time.get_ticks() - self.last_activity
+            overlay = self.show_picker or self.show_setup_guide
+            self.panel_idle_hidden = idle > self.idle_hide_ms and not overlay
+            pygame.mouse.set_visible(not self.panel_idle_hidden)
 
             # ── Render pattern → FBO ──────────────────────────────────────
             try:

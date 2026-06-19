@@ -43,6 +43,21 @@ CHAKRAS = [
     ("Crown",    (175,  55,230),  6000,  20000),
 ]
 
+# Solfeggio frequencies (Hz) with their traditional chakra colours.  Unlike the
+# CHAKRAS table (which spreads 7 colours across the whole audible spectrum for a
+# lively visualiser), these are the literal Solfeggio tones — colour boundaries
+# fall on the actual frequencies, so the mapping is "accurate" to the tradition.
+#   (hz, (r, g, b), chakra)
+SOLFEGGIO = [
+    (396, (220,  30,  30), "Root"),        # UT  — liberating fear   — red
+    (417, (240, 120,   0), "Sacral"),      # RE  — facilitating change — orange
+    (528, (220, 210,   0), "Solar"),       # MI  — transformation    — yellow
+    (639, (  0, 180,  60), "Heart"),       # FA  — connection        — green
+    (741, ( 20, 130, 240), "Throat"),      # SOL — expression        — blue
+    (852, ( 80,  20, 190), "Third Eye"),   # LA  — intuition         — indigo
+    (963, (175,  55, 230), "Crown"),       # SI  — divine            — violet
+]
+
 PALETTES = {
     "Plasma": [(10,0,50),(85,0,145),(215,0,100),(255,80,0),(255,225,50)],
     "Neon":   [(0,0,8),(0,230,195),(110,0,255),(255,0,155),(215,255,0)],
