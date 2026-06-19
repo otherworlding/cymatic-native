@@ -16,6 +16,7 @@ except ImportError:
 class AudioEngine:
     def __init__(self):
         self._fft      = np.zeros(FFT_SIZE // 2 + 1)
+        self._prev_fft = np.zeros(FFT_SIZE // 2 + 1)
         self._lock     = threading.Lock()
         self._win      = np.hanning(FFT_SIZE)
         self._buf      = np.zeros(FFT_SIZE)
@@ -162,6 +163,22 @@ class AudioEngine:
             return 440.0
         freqs = np.linspace(lo * nyq / n, hi * nyq / n, len(sub))
         return float(np.sum(freqs * sub) / tot)
+
+    def spectral_flux(self, fft: np.ndarray) -> float:
+        """Frame-to-frame spectral change — high during transients, low on sustained notes."""
+        diff = np.sum(np.maximum(0, fft - self._prev_fft)) / (FFT_SIZE / 2)
+        self._prev_fft = fft.copy()
+        return float(diff)
+
+    def band_energies_5(self, fft: np.ndarray):
+        """Return (sub_bass, bass, mid, presence, air) energies — five independent drivers."""
+        return (
+            self.band(fft,   20,   80),   # sub-bass: kick, rumble
+            self.band(fft,   80,  300),   # bass: bass guitar, low synth
+            self.band(fft,  300, 2000),   # mid: vocals, lead melody
+            self.band(fft, 2000, 6000),   # presence: snare snap, attack
+            self.band(fft, 6000, 20000),  # air: hi-hats, shimmer
+        )
 
     def top_peaks(self, fft: np.ndarray, count: int = 3):
         n   = len(fft)

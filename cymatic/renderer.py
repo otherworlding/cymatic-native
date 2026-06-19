@@ -67,7 +67,7 @@ class Renderer:
         p['u_segs'].value   = int(segs)
         p['u_rot'].value    = float(rot)
         p['u_zoom'].value   = float(zoom)
-        p['u_mirror'].value = bool(mirror)
+        p['u_mirror'].value = 1 if mirror else 0
         self.vao_k.render(moderngl.TRIANGLE_STRIP)
 
     def blit(self, tex, w, h):

@@ -170,46 +170,49 @@ class App:
     # ══════════════════════════════════════════════════════════════════════════
 
     def _draw_chladni(self, w, h, energies):
-        vol = self._be(20, 20000)
+        sub_bass, bass, mid, presence, air = self.audio.band_energies_5(self.fft)
+        flux = self.audio.spectral_flux(self.fft)
 
-        # ── Sustained envelope ────────────────────────────────────────────────
-        self.vol_peak = max(vol, self.vol_peak * 0.965)
+        total = sub_bass + bass + mid + presence + air
+        self.vol_peak = max(total, self.vol_peak * 0.965)
 
         # ── Spectral centroid → target mode ───────────────────────────────────
         centroid = self.audio.spectral_centroid(self.fft)
-        self.centroid_smooth += (centroid - self.centroid_smooth) * 0.06
+        self.centroid_smooth += (centroid - self.centroid_smooth) * 0.07
         self.next_target = self._hz_to_mode(self.centroid_smooth)
 
-        # ── Continuous morph: blend_t advances every frame ───────────────────
-        # Speed: normally ~1 sec per full transition; beats rush it forward.
-        base_speed  = 0.008 + self.vol_peak * 0.006
-        beat_boost  = self.beat_flash * 0.045
-        self.blend_t += base_speed + beat_boost
+        # ── Morph speed: bass pumps it, flux spikes on transients ────────────
+        base_speed = 0.010 + bass * 0.018 + sub_bass * 0.012
+        flux_boost = min(flux * 0.25, 0.04)
+        beat_boost = self.beat_flash * 0.06
+        self.blend_t += base_speed + flux_boost + beat_boost
         self.blend_t  = min(1.0, self.blend_t)
 
-        # When morph completes, immediately queue the next transition
         if self.blend_t >= 1.0:
-            self.mode_from = self.mode_to        # arrived — freeze here
-            self.mode_to   = self.next_target    # head toward new target
+            self.mode_from = self.mode_to
+            self.mode_to   = self.next_target
             self.blend_t   = 0.0
-
-            # If already at the target, pick a neighbour for visual movement
             if self.mode_from == self.mode_to:
                 self.mode_to = (self.mode_to + 1) % len(MODES)
 
         mf, nf = MODES[self.mode_from]
         mt, nt = MODES[self.mode_to]
 
-        # ── Visuals ───────────────────────────────────────────────────────────
-        thresh = 0.022 + (self.S['thresh'] - 1) / 19 * 0.05
-        thresh += self.beat_flash * 0.016
+        # ── Line width: slider + presence (snare/attack) flares edges ────────
+        thresh = 0.020 + (self.S['thresh'] - 1) / 19 * 0.052
+        thresh += presence * 0.018 + self.beat_flash * 0.014
 
-        bright = 0.6 + self.vol_peak * 2.0 + self.beat_flash * 1.2
+        # ── Brightness: sustained by envelope; air band adds shimmer ─────────
+        bright = 0.60 + self.vol_peak * 1.8 + air * 1.2 + self.beat_flash * 1.0
         bright = min(3.0, bright)
 
-        phase = self.S['t'] * 0.011
+        # ── Phase drift: mid energy speeds up the slow animation ─────────────
+        phase = self.S['t'] * (0.010 + mid * 0.020)
 
-        col = self._color(0.6 + self.beat_flash * 0.4, self._dom_band(energies))
+        # ── Hue: tracks spectral centroid; shifts toward warm on beats ────────
+        hue_pos = 0.55 + (self.centroid_smooth - 300) / 8000 * 0.4
+        hue_pos = max(0.0, min(1.0, hue_pos)) + self.beat_flash * 0.3
+        col = self._color(hue_pos, self._dom_band(energies))
 
         self.rdr.chladni(w, h, mf, nf, mt, nt, self.blend_t, thresh, bright, phase, col)
 

@@ -82,21 +82,22 @@ uniform sampler2D u_tex;
 uniform vec2  u_res;
 uniform int   u_segs;
 uniform float u_rot, u_zoom;
-uniform bool  u_mirror;
+uniform int   u_mirror;
 out vec4 f;
 const float PI2 = 6.28318530718;
 void main() {
     vec2 uv = (gl_FragCoord.xy / u_res - 0.5) / max(u_zoom, 0.1);
     float angle = atan(uv.y, uv.x) + u_rot;
     float r = length(uv);
-    float slice = PI2 / float(u_segs);
+    float slice = PI2 / float(max(u_segs, 2));
     angle = mod(angle, slice);
     if (angle < 0.0) angle += slice;
-    if (u_mirror) {
+    if (u_mirror != 0) {
         float t = mod(angle / slice * 2.0, 2.0);
         if (t > 1.0) angle = slice - angle;
     }
-    vec2 newUV = vec2(r * cos(angle), r * sin(angle)) + 0.5;
+    // Clamp to [0.01, 0.99] to avoid edge-sampling artefacts on the FBO texture
+    vec2 newUV = clamp(vec2(r * cos(angle), r * sin(angle)) + 0.5, 0.01, 0.99);
     f = texture(u_tex, newUV);
 }
 """
