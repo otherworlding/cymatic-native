@@ -319,9 +319,9 @@ class App:
         x, y = 10, 10
         row_lbl("SOURCE", x, y)
         self.btns['mic']    = btn("MIC / LINE IN",  self.S['src'] == 'mic',    x + 65,  y, 108)
-        bh_found = find_blackhole() is not None
-        self.btns['system'] = btn("SYSTEM AUDIO", self.S['src'] == 'system', x + 178, y, 105)
-        self.btns['file']   = btn("OPEN FILE",      self.S['src'] == 'file',   x + 288, y, 85)
+        self.btns['system'] = btn("SYSTEM AUDIO",   self.S['src'] == 'system', x + 178, y, 105)
+        self.btns['file']   = btn("OPEN FILE",       self.S['src'] == 'file',   x + 288, y, 85)
+        self.btns['midi']   = btn("Audio MIDI Setup", False,                    x + 378, y, 122)
 
         st = self.font_sm.render(self.status_msg, True, (55, 55, 78))
         panel.blit(st, (w - st.get_width() - 10, y + 5))
@@ -556,6 +556,7 @@ class App:
         if hit('mic'):        self._start_mic()
         elif hit('system'):   self._start_system()
         elif hit('file'):     self._open_file()
+        elif hit('midi'):     open_audio_midi_setup()
         elif hit('chladni'):  self.S['pattern'] = 'chladni'
         elif hit('rings'):    self.S['pattern'] = 'rings'
         elif hit('liss'):
