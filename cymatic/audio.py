@@ -150,6 +150,19 @@ class AudioEngine:
             return 440.0
         return (lo + int(np.argmax(fft[lo:]))) * nyq / n
 
+    def spectral_centroid(self, fft: np.ndarray) -> float:
+        """Weighted average frequency — changes with every note and harmonic shift."""
+        n    = len(fft)
+        nyq  = self.current_sr / 2
+        lo   = max(2, int(60 / nyq * n))
+        hi   = min(n - 1, int(8000 / nyq * n))
+        sub  = fft[lo:hi + 1]
+        tot  = float(np.sum(sub))
+        if tot < 1e-6:
+            return 440.0
+        freqs = np.linspace(lo * nyq / n, hi * nyq / n, len(sub))
+        return float(np.sum(freqs * sub) / tot)
+
     def top_peaks(self, fft: np.ndarray, count: int = 3):
         n   = len(fft)
         nyq = self.current_sr / 2

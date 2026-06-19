@@ -68,10 +68,12 @@ class App:
         self.on_beat = False
 
         # Chladni state
-        self.mode_idx      = 2    # current mode index into MODES
-        self.mode_hold     = 0    # frames remaining before mode can switch again
-        self.mode_target   = 2    # target mode we're moving toward
-        self.mode_stable   = 0    # frames target has stayed the same
+        self.mode_idx      = 2
+        self.mode_hold     = 0
+        self.mode_target   = 2
+        self.mode_stable   = 0
+        self.vol_peak      = 0.0   # peak-hold volume — decays slowly so image sustains
+        self.centroid_smooth = 300.0  # smoothed spectral centroid
 
         # Lissajous state
         self.liss_a     = 3.0
@@ -170,53 +172,57 @@ class App:
     def _draw_chladni(self, w, h, energies):
         vol = self._be(20, 20000)
 
-        # ── Mode selection (physics-based) ────────────────────────────────────
-        if vol > 0.008:
-            dom = self.audio.dominant_hz(self.fft)
-            tgt = self._hz_to_mode(dom)
+        # ── Peak-hold envelope — sustains brightness between transients ───────
+        # Rise fast (track the sound), decay slowly (holds image during silence)
+        self.vol_peak = max(vol, self.vol_peak * 0.96)
+        # Smoothed centroid tracks spectral weight continuously
+        centroid = self.audio.spectral_centroid(self.fft)
+        self.centroid_smooth += (centroid - self.centroid_smooth) * 0.08
 
-            # Track how long the target has been stable
-            if tgt == self.mode_target:
-                self.mode_stable += 1
-            else:
-                self.mode_target  = tgt
-                self.mode_stable  = 0
+        # ── Mode selection ────────────────────────────────────────────────────
+        # Drive mode with centroid (changes with every note/chord shift) and
+        # boost variety: on beats also pick from secondary spectral peaks.
+        tgt = self._hz_to_mode(self.centroid_smooth)
 
-            # Switch rules:
-            # • On a beat: switch immediately to the target
-            # • Target stable for 6+ frames and current hold expired: switch
-            # • Jump of 4+ modes: switch immediately (dramatic frequency shift)
-            jump = abs(tgt - self.mode_idx)
+        if self.on_beat:
+            # On beats jump to centroid mode immediately, break out of holds
+            self.mode_idx    = tgt
+            self.mode_target = tgt
+            self.mode_stable = 0
+            self.mode_hold   = 2
+        else:
             if self.mode_hold > 0:
                 self.mode_hold -= 1
-            can_switch = self.mode_hold == 0
 
-            if can_switch and (
-                self.on_beat or
-                self.mode_stable >= 6 or
-                jump >= 4
-            ):
+            if tgt == self.mode_target:
+                self.mode_stable = min(self.mode_stable + 1, 60)
+            else:
+                self.mode_target = tgt
+                self.mode_stable = 0
+
+            # Switch when target has been stable for 3+ frames and hold expired
+            if self.mode_hold == 0 and self.mode_stable >= 3:
                 self.mode_idx  = tgt
-                self.mode_hold = 4   # hold at least 4 frames before next change
+                self.mode_hold = 3
 
         m, n = MODES[self.mode_idx]
 
         # ── Visual parameters ─────────────────────────────────────────────────
-        # Threshold: keep it tight. "Line Width" slider 1-20 maps to 0.012-0.055.
-        base_thresh = 0.012 + (self.S['thresh'] - 1) / 19 * 0.043
-        # Beat widens lines briefly so they flash visible
-        thresh = base_thresh + self.beat_flash * 0.025
+        # Line width: slider 1-20 maps 0.018 (sharp) to 0.065 (painterly)
+        thresh = 0.018 + (self.S['thresh'] - 1) / 19 * 0.047
+        thresh += self.beat_flash * 0.018   # lines flare on beats
 
-        # Brightness: quiet = dim, loud = bright, beat = flash
-        bright = 0.25 + vol * 2.8 + self.beat_flash * 1.8
-        bright = min(2.8, bright)
+        # Brightness: always at least 0.55 so the pattern never vanishes
+        bright = 0.55 + self.vol_peak * 2.2 + self.beat_flash * 1.4
+        bright = min(3.0, bright)
 
-        # Glow widens on beats (1 = no extra glow, 4 = wide halo)
-        glow = 1.8 + self.beat_flash * 2.2
+        # Slowly advance phase so pattern animates even during sustained notes
+        phase = self.S['t'] * 0.012
 
-        col = self._color(min(1.0, 0.2 + vol * 2.0), self._dom_band(energies))
+        # Color stays rich — use 0.65 as base position in palette, not vol-dependent
+        col = self._color(0.65 + self.beat_flash * 0.35, self._dom_band(energies))
 
-        self.rdr.chladni(w, h, m, n, thresh, bright, glow, col)
+        self.rdr.chladni(w, h, m, n, thresh, bright, phase, col)
 
     def _draw_rings(self, w, h, energies):
         vol = self._be(20, 20000)

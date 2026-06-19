@@ -13,29 +13,33 @@ CHLADNI = """
 #version 330
 uniform vec2  u_res;
 uniform float u_m, u_n;
-uniform float u_thresh;   // nodal line half-width  (0.01 = razor, 0.06 = wide)
-uniform float u_bright;   // overall brightness multiplier
-uniform float u_glow;     // secondary glow radius multiplier (1..4)
+uniform float u_thresh;   // nodal line half-width
+uniform float u_bright;   // brightness multiplier
+uniform float u_phase;    // time-based animation offset
 uniform vec3  u_col;
 out vec4 f;
 const float PI = 3.14159265358979323846;
 void main() {
     vec2 uv = gl_FragCoord.xy / u_res * 2.0 - 1.0;
 
-    // Chladni formula for a square plate with free boundaries.
-    // Nodal lines are the zero-crossings of v.
-    float v = cos(u_m * PI * uv.x) * cos(u_n * PI * uv.y)
-            - cos(u_n * PI * uv.x) * cos(u_m * PI * uv.y);
+    // Animated Chladni — phase shifts the figure gently over time
+    // so the pattern feels alive even during sustained tones.
+    float px = uv.x + sin(u_phase * 0.7) * 0.04;
+    float py = uv.y + cos(u_phase * 0.5) * 0.04;
+
+    float v = cos(u_m * PI * px) * cos(u_n * PI * py)
+            - cos(u_n * PI * px) * cos(u_m * PI * py);
 
     float d = abs(v);
 
-    // Sharp bright line at nodal positions
+    // Sharp nodal line
     float line = 1.0 - smoothstep(0.0, u_thresh, d);
+    // Wide soft glow — always at least dimly visible
+    float glow = 0.5  * (1.0 - smoothstep(0.0, u_thresh * 5.0, d));
+    // Ambient fill so pattern never fully disappears
+    float ambient = 0.08 * (1.0 - smoothstep(0.0, u_thresh * 14.0, d));
 
-    // Soft secondary glow so lines are visible on dark background
-    float glow = 0.35 * (1.0 - smoothstep(u_thresh, u_thresh * u_glow, d));
-
-    float intensity = clamp(line + glow, 0.0, 1.0);
+    float intensity = clamp(line + glow + ambient, 0.0, 1.0);
     f = vec4(u_col * intensity * u_bright, 1.0);
 }
 """
